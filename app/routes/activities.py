@@ -28,7 +28,7 @@ def create_activity(
         access_type=activity.access_type,
         created_by=current_user.id,
         ai_guide=activity.ai_guide,
-        follow_up_questions=activity.follow_up_questions
+        final_description=activity.final_description
     )
     db.add(db_activity)
     db.commit()

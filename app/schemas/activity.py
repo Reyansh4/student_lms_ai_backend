@@ -13,7 +13,7 @@ class ActivityBase(BaseModel):
     difficulty_level: DifficultyLevel
     access_type: AccessType
     ai_guide: bool = False
-    follow_up_questions: Optional[Dict[str, Any]] = None
+    final_description: Optional[str] = None
 
 class ActivityCreate(ActivityBase):
     pass
