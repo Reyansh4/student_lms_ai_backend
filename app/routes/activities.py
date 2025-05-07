@@ -27,7 +27,8 @@ def create_activity(
         difficulty_level=activity.difficulty_level,
         access_type=activity.access_type,
         created_by=current_user.id,
-        ai_guide=activity.ai_guide
+        ai_guide=activity.ai_guide,
+        follow_up_questions=activity.follow_up_questions
     )
     db.add(db_activity)
     db.commit()

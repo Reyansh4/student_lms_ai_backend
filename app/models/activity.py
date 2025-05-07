@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, Enum, UUID, func
+from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, Enum, UUID, func, JSON
 from sqlalchemy.orm import relationship
 from db.base import Base
 import uuid
@@ -14,7 +14,7 @@ class AccessType(enum.Enum):
     GLOBAL = "global"
 
 class Activity(Base):
-    __tablename__ = "activities"
+    __tablename__ = "activity"
 
     id = Column(UUID, primary_key=True, default=uuid.uuid4)
     name = Column(String(200), nullable=False)
@@ -28,6 +28,7 @@ class Activity(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    follow_up_questions = Column(JSON)
 
     # Relationships
     category = relationship("ActivityCategory", back_populates="activities")

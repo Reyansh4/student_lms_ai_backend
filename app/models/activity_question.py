@@ -7,7 +7,7 @@ class ActivityQuestion(Base):
     __tablename__ = "activity_questions"
 
     id = Column(UUID, primary_key=True, default=uuid.uuid4)
-    activity_id = Column(UUID, ForeignKey("activities.id"), nullable=False)
+    activity_id = Column(UUID, ForeignKey("activity.id"), nullable=False)
     question_text = Column(Text, nullable=False)
     solution_steps = Column(Text)
     answer = Column(String(500))

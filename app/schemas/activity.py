@@ -1,5 +1,5 @@
 from pydantic import BaseModel, UUID4
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
 from enum import Enum
@@ -13,6 +13,7 @@ class ActivityBase(BaseModel):
     difficulty_level: DifficultyLevel
     access_type: AccessType
     ai_guide: bool = False
+    follow_up_questions: Optional[Dict[str, Any]] = None
 
 class ActivityCreate(ActivityBase):
     pass

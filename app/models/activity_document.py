@@ -15,7 +15,7 @@ class ActivityDocument(Base):
     __tablename__ = "activity_documents"
 
     id = Column(UUID, primary_key=True, default=uuid.uuid4)
-    activity_id = Column(UUID, ForeignKey("activities.id"), nullable=False)
+    activity_id = Column(UUID, ForeignKey("activity.id"), nullable=False)
     file_name = Column(String(255), nullable=False)
     file_type = Column(Enum(FileType), nullable=False)
     description = Column(String(500))

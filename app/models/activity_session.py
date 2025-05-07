@@ -13,7 +13,7 @@ class ActivitySession(Base):
     __tablename__ = "activity_sessions"
 
     id = Column(UUID, primary_key=True, default=uuid.uuid4)
-    activity_id = Column(UUID, ForeignKey("activities.id"), nullable=False)
+    activity_id = Column(UUID, ForeignKey("activity.id"), nullable=False)
     user_id = Column(UUID, ForeignKey("users.id"), nullable=False)
     status = Column(Enum(SessionStatus), nullable=False)
     started_at = Column(DateTime, default=func.now())
