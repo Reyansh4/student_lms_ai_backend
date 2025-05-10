@@ -1,8 +1,9 @@
 from fastapi import APIRouter
-from routes import auth, roles, activities
+from app.routes import auth, roles, activities
 
 api_router = APIRouter()
 
-api_router.include_router(auth.router)
-api_router.include_router(roles.router)
-api_router.include_router(activities.router)
+# Include all routers
+api_router.include_router(auth.router, prefix="/auth", tags=["authentication"])
+api_router.include_router(roles.router, prefix="/roles", tags=["roles"])
+api_router.include_router(activities.router, prefix="/activities", tags=["activities"])

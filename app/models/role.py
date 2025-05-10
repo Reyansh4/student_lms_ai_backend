@@ -2,7 +2,7 @@ from sqlalchemy import Column, String, DateTime, UUID, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
-from db.base import Base
+from app.db.base import Base
 
 class Role(Base):
     __tablename__ = "roles"
