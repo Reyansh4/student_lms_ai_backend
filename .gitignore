@@ -1,0 +1,11 @@
+.env
+__pycache__/*
+*.pyc
+*.pyo
+*.pyd
+.Python
+requirements.txt
+app/__pycache__/*
+env/
+__pycache__/*.pyc
+
