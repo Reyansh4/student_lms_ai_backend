@@ -1,13 +1,30 @@
-from typing import Any, List
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from typing import Any, List, Dict
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Body
 from sqlalchemy.orm import Session
 from uuid import UUID
+from pydantic import BaseModel
 from app.models.activity import Activity
 from app.schemas.activity import ActivityCreate, ActivityUpdate, ActivityResponse
 from app.api.deps import get_db, get_current_user
 from app.models.user import User
 from app.models.activity_templates import ActivityTemplate
 from app.core.logger import get_logger
+from app.agent.templates.activity.clarification_questions import generate_clarification_questions
+from app.agent.templates.activity.final_description import generate_final_description
+
+# Add new schemas for request/response
+class ClarificationQuestionsResponse(BaseModel):
+    activity_id: UUID
+    questions: List[Dict[str, str]]  # List of question objects with id and text
+    status: str
+
+class ClarificationAnswersRequest(BaseModel):
+    answers: Dict[str, str]  # Map of question_id to answer
+
+class FinalDescriptionResponse(BaseModel):
+    activity_id: UUID
+    final_description: str
+    status: str
 
 # Initialize logger
 logger = get_logger(__name__)
@@ -217,4 +234,151 @@ def create_activity_with_template(
         raise HTTPException(
             status_code=500,
             detail="An error occurred while creating the activity from template"
+        )
+
+@router.post("/{activity_id}/generate-clarification-questions", response_model=ClarificationQuestionsResponse)
+async def generate_activity_clarification_questions(
+    activity_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Generate 5 clarification questions for an activity using AI"""
+    logger.info(f"Generating clarification questions for activity {activity_id} by user: {current_user.email}")
+    try:
+        # Get the activity
+        activity = db.query(Activity).filter(Activity.id == activity_id).first()
+        if not activity:
+            logger.warning(f"Activity not found: {activity_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Activity not found"
+            )
+
+        # Prepare activity details for the template
+        activity_details = {
+            "name": activity.name,
+            "description": activity.description,
+            "level": activity.difficulty_level,
+            "category_name": activity.category.name if activity.category else None,
+            "sub_category_name": activity.sub_category.name if activity.sub_category else None
+        }
+
+        # Generate exactly 5 clarification questions using the template
+        questions = await generate_clarification_questions(activity_details)
+        
+        # Format questions with unique IDs
+        formatted_questions = [
+            {
+                "id": f"q_{i+1}",
+                "text": question
+            }
+            for i, question in enumerate(questions[:5])  # Ensure exactly 5 questions
+        ]
+        
+        # Update activity with the generated questions
+        activity.clarification_questions = formatted_questions
+        db.commit()
+        
+        logger.info(f"Successfully generated 5 clarification questions for activity: {activity_id}")
+        return ClarificationQuestionsResponse(
+            activity_id=activity_id,
+            questions=formatted_questions,
+            status="success"
+        )
+    except Exception as e:
+        logger.error(f"Error generating clarification questions for activity {activity_id}: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while generating clarification questions: {str(e)}"
+        )
+
+@router.post("/{activity_id}/generate-final-description", response_model=FinalDescriptionResponse)
+async def generate_activity_final_description(
+    activity_id: UUID,
+    answers_request: ClarificationAnswersRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Generate final description for an activity using AI based on clarification answers"""
+    logger.info(f"Generating final description for activity {activity_id} by user: {current_user.email}")
+    try:
+        # Get the activity
+        activity = db.query(Activity).filter(Activity.id == activity_id).first()
+        if not activity:
+            logger.warning(f"Activity not found: {activity_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Activity not found"
+            )
+
+        # Verify that clarification questions exist
+        if not activity.clarification_questions:
+            logger.warning(f"No clarification questions found for activity: {activity_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Clarification questions must be generated first"
+            )
+
+        # Verify that all questions have been answered
+        # question_ids = {q["id"] for q in activity.clarification_questions}
+        # answer_ids = set(answers_request.answers.keys())
+        # if question_ids != answer_ids:
+        #     missing_questions = question_ids - answer_ids
+        #     extra_answers = answer_ids - question_ids
+        #     error_msg = []
+        #     if missing_questions:
+        #         error_msg.append(f"Missing answers for questions: {missing_questions}")
+        #     if extra_answers:
+        #         error_msg.append(f"Extra answers provided for non-existent questions: {extra_answers}")
+        #     raise HTTPException(
+        #         status_code=status.HTTP_400_BAD_REQUEST,
+        #         detail="All questions must be answered: " + "; ".join(error_msg)
+        #     )
+
+        # Prepare activity details and Q&A for the template
+        activity_details = {
+            "name": activity.name,
+            "description": activity.description,
+            "level": activity.difficulty_level,
+            "category_name": activity.category.name if activity.category else None,
+            "sub_category_name": activity.sub_category.name if activity.sub_category else None
+        }
+
+        # Format Q&A for the template
+        qa_pairs = [
+            {
+                "question": next(q["text"] for q in activity.clarification_questions if q["id"] == q_id),
+                "answer": answer
+            }
+            for q_id, answer in answers_request.answers.items()
+        ]
+
+        # Generate final description using the template
+        final_description = await generate_final_description(
+            activity_details=activity_details,
+            clarification_qa=qa_pairs
+        )
+        
+        # Update activity with the final description
+        activity.final_description = final_description
+        db.commit()
+        
+        logger.info(f"Successfully generated final description for activity: {activity_id}")
+        return FinalDescriptionResponse(
+            activity_id=activity_id,
+            final_description=final_description,
+            status="success"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating final description for activity {activity_id}: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while generating final description: {str(e)}"
         ) 
+    
+
+    
