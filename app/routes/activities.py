@@ -9,7 +9,7 @@ from app.api.deps import get_db, get_current_user
 from app.models.user import User
 from app.models.activity_templates import ActivityTemplate
 from app.core.logger import get_logger
-from app.agent.templates.activity.clarification_questions import generate_clarification_questions
+from app.services.generate_clarification_questions import generate_clarification_questions
 from app.agent.templates.activity.final_description import generate_final_description
 
 # Add new schemas for request/response
@@ -237,7 +237,7 @@ def create_activity_with_template(
         )
 
 @router.post("/{activity_id}/generate-clarification-questions", response_model=ClarificationQuestionsResponse)
-async def generate_activity_clarification_questions(
+def generate_activity_clarification_questions(
     activity_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -276,9 +276,7 @@ async def generate_activity_clarification_questions(
         ]
         
         # Update activity with the generated questions
-        activity.clarification_questions = formatted_questions
-        db.commit()
-        
+                                                                       
         logger.info(f"Successfully generated 5 clarification questions for activity: {activity_id}")
         return ClarificationQuestionsResponse(
             activity_id=activity_id,
@@ -294,7 +292,7 @@ async def generate_activity_clarification_questions(
         )
 
 @router.post("/{activity_id}/generate-final-description", response_model=FinalDescriptionResponse)
-async def generate_activity_final_description(
+def generate_activity_final_description(
     activity_id: UUID,
     answers_request: ClarificationAnswersRequest,
     db: Session = Depends(get_db),
@@ -381,4 +379,8 @@ async def generate_activity_final_description(
         ) 
     
 
-    
+
+# AI Agent :-
+# Input :- User Input, activity_final description, document(optional)
+
+# It will call prompt template in which you have input. It will be zero shots. 

@@ -9,13 +9,13 @@
 ### Input
 Activity Details Structure:
 ```
-{
+{{
     "name": "Activity name/title",
     "description": "Activity description",
     "level": "Difficulty/grade level",
     "category_name": "Main category",
     "sub_category_name": "Sub-category"
-}
+}}
 ```
 
 ### Definition
@@ -61,13 +61,13 @@ Clarification questions should:
 ### Example 1: Science Experiment Activity
 Input:
 ```
-{
+{{
     "name": "Chemical Reaction Lab",
     "description": "Students will conduct experiments to observe chemical reactions",
     "level": "Grade 10",
     "category_name": "Science",
     "sub_category_name": "Chemistry"
-}
+}}
 ```
 
 Output:
@@ -86,13 +86,13 @@ Output:
 ### Example 2: Programming Activity
 Input:
 ```
-{
+{{
     "name": "Python Game Development",
     "description": "Create a simple game using Python programming",
     "level": "Intermediate",
     "category_name": "Computer Science",
     "sub_category_name": "Programming"
-}
+}}
 ```
 
 Output:
@@ -153,3 +153,14 @@ Remember to:
 - Ensure questions are specific to the activity type and level
 - Validate all necessary parameters for successful implementation
 - Consider both student and teacher perspectives
+
+# USER INPUT
+Input:
+```
+{activity_dictionary}
+```
+
+# OUTPUT
+Output:
+```
+```
