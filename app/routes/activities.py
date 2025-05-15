@@ -9,8 +9,8 @@ from app.api.deps import get_db, get_current_user
 from app.models.user import User
 from app.models.activity_templates import ActivityTemplate
 from app.core.logger import get_logger
-from app.services.generate_clarification_questions import generate_clarification_questions
-from app.agent.templates.activity.final_description import generate_final_description
+from app.services.generate_clearification_questions import generate_clarification_questions
+from app.services.generate_final_description import generate_final_description
 
 # Add new schemas for request/response
 class ClarificationQuestionsResponse(BaseModel):
@@ -34,7 +34,7 @@ router = APIRouter(
     tags=["activities"]
 )
 
-@router.post("/", response_model=ActivityResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/add", response_model=ActivityResponse, status_code=status.HTTP_201_CREATED)
 def create_activity(
     activity: ActivityCreate,
     db: Session = Depends(get_db),
@@ -264,7 +264,7 @@ def generate_activity_clarification_questions(
         }
 
         # Generate exactly 5 clarification questions using the template
-        questions = await generate_clarification_questions(activity_details)
+        questions =  generate_clarification_questions(activity_details)
         
         # Format questions with unique IDs
         formatted_questions = [
@@ -352,8 +352,8 @@ def generate_activity_final_description(
             for q_id, answer in answers_request.answers.items()
         ]
 
-        # Generate final description using the template
-        final_description = await generate_final_description(
+        # Generate fina description using the template
+        final_description = generate_final_description(
             activity_details=activity_details,
             clarification_qa=qa_pairs
         )
