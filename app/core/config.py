@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     DB_NAME: str = "student_lms_ai"
     DB_PORT: int = 5432
 
+    OPENAI_API_KEY: str
+
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
         """Get database URI as string."""
@@ -40,6 +42,7 @@ class Settings(BaseSettings):
     class Config:
         case_sensitive = True
         env_file = ".env"
+        extra = "allow"
 
 # Create settings instance
 settings = Settings()
