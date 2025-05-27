@@ -34,7 +34,7 @@ router = APIRouter(
 )
 
 @router.post("/{activity_id}/generate-clarification-questions", response_model=ClarificationQuestionsResponse)
-def generate_activity_clarification_questions(
+async def generate_activity_clarification_questions(
     activity_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
