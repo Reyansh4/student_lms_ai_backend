@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional
 from pydantic_settings import BaseSettings
-from pydantic import PostgresDsn, validator
+from pydantic import PostgresDsn, validator, HttpUrl, Extra
 import secrets
 from pathlib import Path
 import os
@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Student LMS"
     VERSION: str = "1.0.0" 
     API_PREFIX: str = "/api/v1"
+    TITLE: str = "Create Chat Completions via Azure OpenAI"
     
     # Security settings
     SECRET_KEY: str = secrets.token_urlsafe(32)
@@ -26,9 +27,11 @@ class Settings(BaseSettings):
     DB_NAME: str = "student_lms_ai"
     DB_PORT: int = 5432
 
-    OPENAI_API_KEY: str
-
-    HUGGINGFACE_API_KEY: str = os.getenv("HUGGINGFACE_API_KEY")
+    # Azure OpenAI settings
+    AZURE_OPENAI_KEY: str
+    AZURE_OPENAI_ENDPOINT: HttpUrl
+    AZURE_OPENAI_DEPLOYMENT: str = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")  # Map to deployment name
+    AZURE_OPENAI_API_VERSION: str = "2023-05-15"
 
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:

@@ -65,4 +65,17 @@ class ActivitySession(ActivitySessionBase):
     grade: Optional[float] = None
 
     class Config:
-        from_attributes = True 
+        from_attributes = True
+
+class ClarificationQuestionsResponse(BaseModel):
+    activity_id: UUID
+    questions: List[Dict[str, str]]  # List of question objects with id and text
+    status: str
+
+class ClarificationAnswersRequest(BaseModel):
+    answers: Dict[str, str]  # Map of question_id to answer
+
+class FinalDescriptionResponse(BaseModel):
+    activity_id: UUID
+    final_description: str
+    status: str 

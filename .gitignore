@@ -8,5 +8,5 @@ requirements.txt
 app/__pycache__/*
 venv/
 __pycache__/*.pyc
-
+fastapi.log
 logs/*

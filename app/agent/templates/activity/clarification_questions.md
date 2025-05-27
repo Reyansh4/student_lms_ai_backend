@@ -154,6 +154,7 @@ Remember to:
 - Validate all necessary parameters for successful implementation
 - Consider both student and teacher perspectives
 
+<<<<<<< HEAD
 # USER INPUT
 Input:
 ```
@@ -164,3 +165,11 @@ Input:
 Output:
 ```
 ```
+=======
+
+## USER INPUT 
+
+{user_input}
+
+## OUTPUT
+>>>>>>> bc4b5af (added templates)
