@@ -3,6 +3,7 @@ from pydantic_settings import BaseSettings
 from pydantic import PostgresDsn, validator
 import secrets
 from pathlib import Path
+import os
 
 class Settings(BaseSettings):
     # Application settings
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = secrets.token_urlsafe(32)
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRY_TIME: int = 60  # Default to 60 minutes
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # Database settings
@@ -23,6 +25,10 @@ class Settings(BaseSettings):
     DB_PASSWORD: str = "reyansh4"
     DB_NAME: str = "student_lms_ai"
     DB_PORT: int = 5432
+
+    OPENAI_API_KEY: str
+
+    HUGGINGFACE_API_KEY: str = os.getenv("HUGGINGFACE_API_KEY")
 
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
@@ -40,6 +46,7 @@ class Settings(BaseSettings):
     class Config:
         case_sensitive = True
         env_file = ".env"
+        extra = "allow"
 
 # Create settings instance
 settings = Settings()
