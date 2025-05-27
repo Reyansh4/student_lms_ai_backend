@@ -3,6 +3,7 @@ from pydantic_settings import BaseSettings
 from pydantic import PostgresDsn, validator
 import secrets
 from pathlib import Path
+import os
 
 class Settings(BaseSettings):
     # Application settings
@@ -26,6 +27,8 @@ class Settings(BaseSettings):
     DB_PORT: int = 5432
 
     OPENAI_API_KEY: str
+
+    HUGGINGFACE_API_KEY: str = os.getenv("HUGGINGFACE_API_KEY")
 
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:

@@ -13,7 +13,7 @@ from app.schemas.role import (
 )
 from app.core.logger import get_logger
 
-# Initialize logger
+# Initialize loggers
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/roles", tags=["roles"])
@@ -48,11 +48,10 @@ def create_role(
     current_user: User = Depends(get_current_active_user),
 ) -> Any:
     """
-    Create a new role.
+    Create a new role and optionally assign permissions.
     """
     logger.info(f"Creating new role: {role_in.name} by user: {current_user.email}")
     try:
-        # Check if role with same name exists
         existing_role = db.query(Role).filter(Role.name == role_in.name).first()
         if existing_role:
             logger.warning(f"Role creation failed - name already exists: {role_in.name}")
@@ -61,15 +60,38 @@ def create_role(
                 detail="Role with this name already exists",
             )
         
+        # Create the Role
         role = Role(
             name=role_in.name,
             description=role_in.description,
+            is_active=role_in.is_active,
         )
         db.add(role)
         db.commit()
         db.refresh(role)
-        logger.info(f"Successfully created role: {role.id}")
+
+        # Assign permissions if provided
+        for permission_id in role_in.permissions:
+            permission = db.query(Permission).filter(Permission.id == permission_id).first()
+            if not permission:
+                logger.warning(f"Permission not found: {permission_id}")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Permission with ID {permission_id} not found",
+                )
+            role_permission = RolePermission(
+                role_id=role.id,
+                permission_id=permission_id
+            )
+            db.add(role_permission)
+
+        db.commit()
+
+        # Reload role with permissions
+        role = db.query(Role).filter(Role.id == role.id).first()
+        logger.info(f"Successfully created role with permissions: {role.id}")
         return role
+
     except HTTPException:
         raise
     except Exception as e:
