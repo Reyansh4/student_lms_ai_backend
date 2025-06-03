@@ -1,0 +1,5 @@
+2025-05-20 22:39:54 - llama_chat - INFO - Initializing Chat
+2025-05-20 22:39:54 - llama_chat - INFO - Using model: mistralai/Mistral-7B-v0.1
+2025-05-20 22:39:54 - llama_chat - ERROR - Failed to initialize HuggingFace endpoint: 1 validation error for HuggingFaceEndpoint
+  Value error, Parameters {'max_new_tokens', 'temperature', 'top_p', 'return_full_text', 'repetition_penalty', 'do_sample'} should be specified explicitly. Instead they were passed in as part of `model_kwargs` parameter. [type=value_error, input_value={'endpoint_url': 'https:/...petition_penalty': 1.2}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/value_error
