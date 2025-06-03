@@ -1,96 +1,54 @@
 import os
 from typing import List
 import aiofiles
-from openai import AsyncOpenAI
-from app.core.config import settings
+import json
+from app.services.azure_chat import AzureChat
 
 # Path to the markdown template for prompting
 TEMPLATE_PATH = "app/agent/templates/activity/final_description.md"
 
-# Set OpenRouter API key and base URL for Claude
-client = AsyncOpenAI(
-    api_key=settings.OPENAI_API_KEY,
-    base_url="https://openrouter.ai/api/v1"
-)
-
-# def generate_final_description(activity_details: dict, clarification_qa: List[dict]) -> str:
-#     try:
-#         # Read the .md template asynchronously
-#         with aiofiles.open(TEMPLATE_PATH, mode="r") as f:
-#             template = f.read()
-
-#         # Format the clarification Q&A
-#         qa_block = "\n".join(
-#             [f"Q{i+1}: {pair['question']}\nA{i+1}: {pair['answer']}" for i, pair in enumerate(clarification_qa)]
-#         )
-
-#         # Format activity details in a clean, readable JSON-like format
-#         formatted_details = (
-#             f'{{\n'
-#             f'    "name": "{activity_details.get("name", "")}",\n'
-#             f'    "description": "{activity_details.get("description", "")}",\n'
-#             f'    "level": "{activity_details.get("level", "")}",\n'
-#             f'    "category_name": "{activity_details.get("category_name", "")}",\n'
-#             f'    "sub_category_name": "{activity_details.get("sub_category_name", "")}"\n'
-#             f'}}'
-#         )
-
-#         # Fill the prompt template
-#         prompt = template.format(
-#             activity_details=formatted_details,
-#             clarification_qa=qa_block
-#         )
-
-#         # Send the prompt to Claude 3 Haiku via OpenRouter
-#         response = client.chat.completions.create(
-#             model="anthropic/claude-3-haiku",
-#             messages=[
-#                 {"role": "system", "content": "You are an expert educational activity designer."},
-#                 {"role": "user", "content": prompt}
-#             ],
-#             temperature=0.7
-#         )
-
-#         return response.choices[0].message.content.strip()
-
-#     except Exception as e:
-#         raise RuntimeError(f"Error generating final activity description: {str(e)}")
-
-
-
-from app.agent.huggingface_client import query_huggingface
 async def generate_final_description(activity_details: dict, clarification_qa: List[dict]) -> str:
+    """
+    Generate a final description for an activity using Azure OpenAI based on activity details and clarification Q&A.
+    
+    Args:
+        activity_details: Dictionary containing activity information
+        clarification_qa: List of dictionaries containing question-answer pairs
+        
+    Returns:
+        str: Generated final description
+    """
     try:
+        # Read the template file
         async with aiofiles.open(TEMPLATE_PATH, mode="r") as f:
             template = await f.read()
 
+        # Format the clarification Q&A
         qa_block = "\n".join(
             [f"Q{i+1}: {pair['question']}\nA{i+1}: {pair['answer']}" for i, pair in enumerate(clarification_qa)]
         )
 
-        formatted_details = (
-            f'{{\n'
-            f'    "name": "{activity_details.get("name", "")}",\n'
-            f'    "description": "{activity_details.get("description", "")}",\n'
-            f'    "level": "{activity_details.get("level", "")}",\n'
-            f'    "category_name": "{activity_details.get("category_name", "")}",\n'
-            f'    "sub_category_name": "{activity_details.get("sub_category_name", "")}"\n'
-            f'}}'
+        # Format activity details using proper JSON handling
+        formatted_details = json.dumps(activity_details, indent=4)
+
+        # Fill the prompt template using string replacement
+        filled_prompt = template.replace(
+            "```\n   {\n       \"name\": \"[Activity Name]\",\n       \"description\": \"[Original Description]\",\n       \"level\": \"[Activity Level]\",\n       \"category_name\": \"[Category]\",\n       \"sub_category_name\": \"[Sub-category]\"\n   }\n   ```",
+            f"```\n{formatted_details}\n```"
+        ).replace(
+            "```\n   Q1: [Question 1]\n   A1: [Answer 1]\n   \n   Q2: [Question 2]\n   A2: [Answer 2]\n   \n   [Additional Q&A pairs...]\n   ```",
+            f"```\n{qa_block}\n```"
         )
 
-        prompt = template.format(
-            activity_details=formatted_details,
-            clarification_qa=qa_block
+        # Initialize AzureChat with a specific system message for activity design
+        chat = AzureChat(
+            temperature=0.7,
+            max_tokens=2000,
+            system_message="You are an expert educational activity designer. Your task is to create clear, engaging, and well-structured activity descriptions that help students understand and engage with the learning objectives."
         )
 
-        full_prompt = f"""### System:
-You are an expert educational activity designer.
-
-### User:
-{prompt}
-"""
-
-        final_description = await query_huggingface(full_prompt)
+        # Generate the final description using Azure OpenAI
+        final_description = await chat.achat(filled_prompt)
         return final_description.strip()
 
     except Exception as e:

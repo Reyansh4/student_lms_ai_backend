@@ -385,34 +385,35 @@ def create_activity_with_template(
         )
 
 @router.post("/{activity_id}/generate-clarification-questions", response_model=ClarificationQuestionsResponse)
-def generate_activity_clarification_questions(
+async def generate_activity_clarification_questions(
     activity_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """Generate 5 clarification questions for an activity using AI"""
     logger.info(f"Generating clarification questions for activity {activity_id} by user: {current_user.email}")
-    try:
-        # Get the activity
-        activity = db.query(Activity).filter(Activity.id == activity_id).first()
-        if not activity:
-            logger.warning(f"Activity not found: {activity_id}")
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Activity not found"
-            )
+    
+    # Get the activity first, outside the try block
+    activity = db.query(Activity).filter(Activity.id == activity_id).first()
+    if not activity:
+        logger.warning(f"Activity not found: {activity_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Activity not found"
+        )
 
+    try:
         # Prepare activity details for the template
         activity_details = {
             "name": activity.name,
             "description": activity.description,
-            "level": activity.difficulty_level,
+            "level": activity.difficulty_level.value if activity.difficulty_level else None,  # Convert enum to string
             "category_name": activity.category.name if activity.category else None,
             "sub_category_name": activity.sub_category.name if activity.sub_category else None
         }
 
         # Generate exactly 5 clarification questions using the template
-        questions =  generate_clarification_questions(activity_details)
+        questions = await generate_clarification_questions(activity_details)
         
         # Format questions with unique IDs
         formatted_questions = [
@@ -423,9 +424,11 @@ def generate_activity_clarification_questions(
             for i, question in enumerate(questions[:5])  # Ensure exactly 5 questions
         ]
         
-        # Update activity with the generated questions
-                                                                       
-        logger.info(f"Successfully generated 5 clarification questions for activity: {activity_id}")
+        # Store the questions in the activity
+        activity.clarification_questions = formatted_questions
+        db.commit()
+        
+        logger.info(f"Successfully generated and stored 5 clarification questions for activity: {activity_id}")
         return ClarificationQuestionsResponse(
             activity_id=activity_id,
             questions=formatted_questions,
@@ -440,7 +443,7 @@ def generate_activity_clarification_questions(
         )
 
 @router.post("/{activity_id}/generate-final-description", response_model=FinalDescriptionResponse)
-def generate_activity_final_description(
+async def generate_activity_final_description(
     activity_id: UUID,
     answers_request: ClarificationAnswersRequest,
     db: Session = Depends(get_db),
@@ -466,27 +469,50 @@ def generate_activity_final_description(
                 detail="Clarification questions must be generated first"
             )
 
-        # Verify that all questions have been answered
-        # question_ids = {q["id"] for q in activity.clarification_questions}
-        # answer_ids = set(answers_request.answers.keys())
-        # if question_ids != answer_ids:
-        #     missing_questions = question_ids - answer_ids
-        #     extra_answers = answer_ids - question_ids
-        #     error_msg = []
-        #     if missing_questions:
-        #         error_msg.append(f"Missing answers for questions: {missing_questions}")
-        #     if extra_answers:
-        #         error_msg.append(f"Extra answers provided for non-existent questions: {extra_answers}")
-        #     raise HTTPException(
-        #         status_code=status.HTTP_400_BAD_REQUEST,
-        #         detail="All questions must be answered: " + "; ".join(error_msg)
-        #     )
+        # Verify that all questions have been answered and no extra answers provided
+        question_ids = {q["id"] for q in activity.clarification_questions}
+        answer_ids = set(answers_request.answers.keys())
+        
+        # Check for missing answers
+        missing_questions = question_ids - answer_ids
+        if missing_questions:
+            missing_questions_text = [
+                next(q["text"] for q in activity.clarification_questions if q["id"] == q_id)
+                for q_id in missing_questions
+            ]
+            logger.warning(f"Missing answers for questions: {missing_questions_text}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Missing answers for the following questions: {', '.join(missing_questions_text)}"
+            )
+
+        # Check for extra answers
+        extra_answers = answer_ids - question_ids
+        if extra_answers:
+            logger.warning(f"Extra answers provided for non-existent questions: {extra_answers}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Extra answers provided for non-existent questions: {', '.join(extra_answers)}"
+            )
+
+        # Verify that no answers are empty
+        empty_answers = {
+            q_id: next(q["text"] for q in activity.clarification_questions if q["id"] == q_id)
+            for q_id, answer in answers_request.answers.items()
+            if not answer or not answer.strip()
+        }
+        if empty_answers:
+            logger.warning(f"Empty answers provided for questions: {empty_answers}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Empty answers provided for the following questions: {', '.join(empty_answers.values())}"
+            )
 
         # Prepare activity details and Q&A for the template
         activity_details = {
             "name": activity.name,
             "description": activity.description,
-            "level": activity.difficulty_level,
+            "level": activity.difficulty_level.value if activity.difficulty_level else None,  # Convert enum to string
             "category_name": activity.category.name if activity.category else None,
             "sub_category_name": activity.sub_category.name if activity.sub_category else None
         }
@@ -500,8 +526,8 @@ def generate_activity_final_description(
             for q_id, answer in answers_request.answers.items()
         ]
 
-        # Generate fina description using the template
-        final_description = generate_final_description(
+        # Generate final description using the template
+        final_description = await generate_final_description(
             activity_details=activity_details,
             clarification_qa=qa_pairs
         )
@@ -525,11 +551,3 @@ def generate_activity_final_description(
             status_code=500,
             detail=f"An error occurred while generating final description: {str(e)}"
         ) 
-
-
-
-
-# AI Agent :-
-# Input :- User Input, activity_final description, document(optional)
-
-# It will call prompt template in which you have input. It will be zero shots. 

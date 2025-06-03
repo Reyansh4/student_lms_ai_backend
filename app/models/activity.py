@@ -29,6 +29,7 @@ class Activity(Base):
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     final_description = Column(Text)
+    clarification_questions = Column(JSON)
 
     # Relationships
     category = relationship("ActivityCategory", back_populates="activities")
