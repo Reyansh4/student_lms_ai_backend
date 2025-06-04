@@ -15,8 +15,8 @@ class Settings(BaseSettings):
     SECRET_KEY: str = secrets.token_urlsafe(32)
     JWT_SECRET_KEY: str = secrets.token_urlsafe(32)
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRY_TIME: int = 60  # Default to 60 minutes
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    ACCESS_TOKEN_EXPIRY_TIME: int = 60000  # Default to 60 minutes
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 6000
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # Database settings

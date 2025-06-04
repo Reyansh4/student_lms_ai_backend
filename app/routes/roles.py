@@ -16,7 +16,7 @@ from app.core.logger import get_logger
 # Initialize loggers
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/roles", tags=["roles"])
+router = APIRouter( tags=["roles"])
 
 @router.get("/", response_model=List[RoleSchema])
 def read_roles(

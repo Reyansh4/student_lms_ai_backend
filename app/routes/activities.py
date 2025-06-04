@@ -63,7 +63,6 @@ class SubCategoryResponse(BaseModel):
 logger = get_logger(__name__)
 
 router = APIRouter(
-    prefix="/activities",
     tags=["activities"]
 )
 

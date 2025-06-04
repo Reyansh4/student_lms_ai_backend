@@ -8,7 +8,11 @@ from app.db.session import SessionLocal
 from app.models.user import User
 from app.schemas.auth import TokenData
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl="/api/v1/auth/login",
+    scheme_name="JWT",
+    description="Enter JWT token in the format: Bearer <token>"
+)
 
 def get_db() -> Generator:
     try:

@@ -54,13 +54,19 @@ def signup(
             detail="An error occurred while creating the user."
         )
 
-@router.post("/login", response_model=Token)
-def login(
+@router.post("/login", response_model=Token, summary="Login for access token")
+async def login(
     db: Session = Depends(get_db),
     form_data: OAuth2PasswordRequestForm = Depends()
 ) -> Any:
     """
     OAuth2 compatible token login, get an access token for future requests.
+    
+    - **username**: Your email address
+    - **password**: Your password
+    
+    Returns a JWT token that should be included in the Authorization header for protected endpoints.
+    Format: `Bearer <token>`
     """
     logger.info(f"Login attempt for user: {form_data.username}")
     user = db.query(User).filter(User.email == form_data.username).first()
