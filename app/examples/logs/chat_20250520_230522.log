@@ -1,0 +1,3 @@
+2025-05-20 23:05:22 - llama_chat - INFO - Initializing Chat
+2025-05-20 23:05:22 - llama_chat - INFO - Using model: facebook/opt-350m
+2025-05-20 23:05:22 - llama_chat - ERROR - Failed to initialize HuggingFace client: InferenceClient.__init__() got an unexpected keyword argument 'task'

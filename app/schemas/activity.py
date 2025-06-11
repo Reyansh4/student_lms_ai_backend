@@ -3,7 +3,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
 from enum import Enum
-from models.activity import DifficultyLevel, AccessType
+from app.models.activity import DifficultyLevel, AccessType
 
 class ActivityBase(BaseModel):
     name: str

@@ -1,0 +1,9 @@
+2025-05-20 22:41:56 - llama_chat - INFO - Initializing Chat
+2025-05-20 22:41:56 - llama_chat - INFO - Using model: meta-llama/Llama-2-7b-chat-hf
+2025-05-20 22:41:56 - llama_chat - INFO - Successfully initialized HuggingFace endpoint
+2025-05-20 22:41:56 - llama_chat - INFO - Initialized conversation memory
+2025-05-20 22:41:56 - llama_chat - INFO - Initialized conversation chain
+2025-05-20 22:41:59 - llama_chat - INFO - Received message: Hello
+2025-05-20 22:41:59 - llama_chat - ERROR - API request failed: 
+2025-05-20 22:41:59 - llama_chat - WARNING - Direct API call failed, falling back to LangChain: API request failed: 
+2025-05-20 22:41:59 - llama_chat - ERROR - Error in chat: 'InferenceClient' object has no attribute 'post'

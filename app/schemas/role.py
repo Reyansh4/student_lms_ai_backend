@@ -30,7 +30,6 @@ class Role(RoleBase):
     id: UUID
     created_at: datetime
     updated_at: datetime
-    permissions: List[Permission]
 
     class Config:
         from_attributes = True

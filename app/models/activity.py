@@ -1,6 +1,6 @@
 from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, Enum, UUID, func, JSON
 from sqlalchemy.orm import relationship
-from db.base import Base
+from app.db.base import Base
 import uuid
 import enum
 
@@ -29,6 +29,7 @@ class Activity(Base):
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     final_description = Column(Text)
+    clarification_questions = Column(JSON)
 
     # Relationships
     category = relationship("ActivityCategory", back_populates="activities")
