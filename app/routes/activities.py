@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from uuid import UUID
 from pydantic import BaseModel
 from app.models.activity import Activity
-from app.schemas.activity import ActivityCreate, ActivityUpdate, ActivityResponse
+from app.schemas.activity import ActivityCreate, ActivityUpdate, ActivityResponse, PaginatedActivityResponse
 from app.api.deps import get_db, get_current_user
 from app.models.user import User
 from app.models.activity_templates import ActivityTemplate
@@ -214,19 +214,28 @@ def create_activity(
             detail="An error occurred while creating the activity"
         )
 
-@router.get("/", response_model=List[ActivityResponse])
+@router.get("/", response_model=PaginatedActivityResponse)
 def list_activities(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """List all activities"""
+    """List all activities with pagination"""
     logger.info(f"Listing activities for user: {current_user.email} (skip: {skip}, limit: {limit})")
     try:
+        total_length = db.query(Activity).count()
         activities = db.query(Activity).offset(skip).limit(limit).all()
-        logger.info(f"Found {len(activities)} activities")
-        return activities
+        logger.info(f"Found {len(activities)} activities out of {total_length} total")
+        
+        return PaginatedActivityResponse(
+            items=activities,
+            total_length=total_length,
+            skip=skip,
+            limit=limit,
+            has_next=skip + limit < total_length,
+            has_previous=skip > 0
+        )
     except Exception as e:
         logger.error(f"Error listing activities: {str(e)}")
         raise HTTPException(
@@ -327,10 +336,28 @@ def delete_activity(
                 detail="Not authorized to delete this activity"
             )
 
-        db.delete(db_activity)
-        db.commit()
-        logger.info(f"Successfully deleted activity: {activity_id}")
-        return None
+        # Check if activity has related data that might prevent deletion
+        # This is optional but helps provide better error messages
+        try:
+            db.delete(db_activity)
+            db.commit()
+            logger.info(f"Successfully deleted activity: {activity_id}")
+            return None
+        except Exception as delete_error:
+            db.rollback()
+            logger.error(f"Database error during activity deletion {activity_id}: {str(delete_error)}")
+            # Check if it's a foreign key constraint error
+            if "foreign key constraint" in str(delete_error).lower():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Cannot delete activity because it has related data (sessions, questions, etc.). Please delete related data first."
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="An error occurred while deleting the activity"
+                )
+                
     except HTTPException:
         raise
     except Exception as e:
@@ -468,24 +495,11 @@ async def generate_activity_final_description(
                 detail="Clarification questions must be generated first"
             )
 
-        # Verify that all questions have been answered and no extra answers provided
+        # Get all question IDs and provided answer IDs
         question_ids = {q["id"] for q in activity.clarification_questions}
         answer_ids = set(answers_request.answers.keys())
         
-        # Check for missing answers
-        missing_questions = question_ids - answer_ids
-        if missing_questions:
-            missing_questions_text = [
-                next(q["text"] for q in activity.clarification_questions if q["id"] == q_id)
-                for q_id in missing_questions
-            ]
-            logger.warning(f"Missing answers for questions: {missing_questions_text}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Missing answers for the following questions: {', '.join(missing_questions_text)}"
-            )
-
-        # Check for extra answers
+        # Check for extra answers (answers for non-existent questions)
         extra_answers = answer_ids - question_ids
         if extra_answers:
             logger.warning(f"Extra answers provided for non-existent questions: {extra_answers}")
@@ -494,20 +508,27 @@ async def generate_activity_final_description(
                 detail=f"Extra answers provided for non-existent questions: {', '.join(extra_answers)}"
             )
 
-        # Verify that no answers are empty
-        empty_answers = {
-            q_id: next(q["text"] for q in activity.clarification_questions if q["id"] == q_id)
-            for q_id, answer in answers_request.answers.items()
-            if not answer or not answer.strip()
-        }
-        if empty_answers:
-            logger.warning(f"Empty answers provided for questions: {empty_answers}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Empty answers provided for the following questions: {', '.join(empty_answers.values())}"
-            )
+        # Filter out empty answers and prepare Q&A pairs
+        qa_pairs = []
+        for q_id, answer in answers_request.answers.items():
+            if answer and answer.strip():  # Only include non-empty answers
+                question_text = next(q["text"] for q in activity.clarification_questions if q["id"] == q_id)
+                qa_pairs.append({
+                    "question": question_text,
+                    "answer": answer.strip()
+                })
 
-        # Prepare activity details and Q&A for the template
+        # Log which questions were answered and which were skipped
+        answered_questions = set(answers_request.answers.keys())
+        skipped_questions = question_ids - answered_questions
+        if skipped_questions:
+            skipped_questions_text = [
+                next(q["text"] for q in activity.clarification_questions if q["id"] == q_id)
+                for q_id in skipped_questions
+            ]
+            logger.info(f"Questions skipped (no answers provided): {skipped_questions_text}")
+
+        # Prepare activity details for the template
         activity_details = {
             "name": activity.name,
             "description": activity.description,
@@ -516,16 +537,7 @@ async def generate_activity_final_description(
             "sub_category_name": activity.sub_category.name if activity.sub_category else None
         }
 
-        # Format Q&A for the template
-        qa_pairs = [
-            {
-                "question": next(q["text"] for q in activity.clarification_questions if q["id"] == q_id),
-                "answer": answer
-            }
-            for q_id, answer in answers_request.answers.items()
-        ]
-
-        # Generate final description using the template
+        # Generate final description using the template with available Q&A pairs
         final_description = await generate_final_description(
             activity_details=activity_details,
             clarification_qa=qa_pairs
@@ -535,7 +547,7 @@ async def generate_activity_final_description(
         activity.final_description = final_description
         db.commit()
         
-        logger.info(f"Successfully generated final description for activity: {activity_id}")
+        logger.info(f"Successfully generated final description for activity: {activity_id} with {len(qa_pairs)} answered questions")
         return FinalDescriptionResponse(
             activity_id=activity_id,
             final_description=final_description,
