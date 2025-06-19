@@ -26,7 +26,7 @@ class ActivityUpdate(BaseModel):
     difficulty_level: Optional[DifficultyLevel] = None
     access_type: Optional[AccessType] = None
     ai_guide: Optional[bool] = None
-    is_active: Optional[bool] = None
+    final_description: Optional[str] = None
 
 class ActivityResponse(ActivityBase):
     id: UUID4
@@ -37,6 +37,14 @@ class ActivityResponse(ActivityBase):
 
     class Config:
         from_attributes = True
+
+class PaginatedActivityResponse(BaseModel):
+    items: List[ActivityResponse]
+    total_length: int
+    skip: int
+    limit: int
+    has_next: bool
+    has_previous: bool
 
 # Activity Session schemas
 class SessionStatus(str, Enum):

@@ -10,8 +10,11 @@ from app.schemas.role import (
     RoleCreate,
     Role as RoleSchema,
     RolePermissionCreate,
+    PermissionCreate,
+    Permission as PermissionSchema,
 )
 from app.core.logger import get_logger
+from uuid import UUID
 
 # Initialize loggers
 logger = get_logger(__name__)
@@ -160,4 +163,123 @@ def assign_permission_to_role(
         raise HTTPException(
             status_code=500,
             detail="An error occurred while assigning permission to role"
+        )
+
+@router.post("/permissions/create", response_model=PermissionSchema)
+def create_permission(
+    *,
+    db: Session = Depends(get_db),
+    permission_in: PermissionCreate,
+    current_user: User = Depends(get_current_active_user),
+) -> Any:
+    """
+    Create a new permission.
+    """
+    logger.info(f"Creating new permission: {permission_in.name} by user: {current_user.email}")
+    try:
+        existing_permission = db.query(Permission).filter(Permission.name == permission_in.name).first()
+        if existing_permission:
+            logger.warning(f"Permission creation failed - name already exists: {permission_in.name}")
+            raise HTTPException(
+                status_code=400,
+                detail="Permission with this name already exists",
+            )
+        
+        permission = Permission(
+            name=permission_in.name,
+            description=permission_in.description,
+        )
+        db.add(permission)
+        db.commit()
+        db.refresh(permission)
+        logger.info(f"Successfully created permission: {permission.id}")
+        return permission
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating permission: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while creating the permission"
+        )
+
+@router.get("/permissions", response_model=List[PermissionSchema])
+def read_permissions(
+    db: Session = Depends(get_db),
+    skip: int = 0,
+    limit: int = 100,
+    current_user: User = Depends(get_current_active_user),
+) -> Any:
+    """
+    Get all permissions.
+    """
+    logger.info(f"Listing permissions for user: {current_user.email} (skip: {skip}, limit: {limit})")
+    try:
+        permissions = db.query(Permission).offset(skip).limit(limit).all()
+        logger.info(f"Found {len(permissions)} permissions")
+        return permissions
+    except Exception as e:
+        logger.error(f"Error listing permissions: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while fetching permissions"
+        )
+
+@router.get("/{role_id}/permissions/{permission_id}/check")
+def check_role_permission(
+    role_id: UUID,
+    permission_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Any:
+    """
+    Check if a role has a specific permission.
+    """
+    logger.info(f"Checking permission {permission_id} for role {role_id} by user: {current_user.email}")
+    try:
+        # Check if role exists
+        role = db.query(Role).filter(Role.id == role_id).first()
+        if not role:
+            logger.warning(f"Role not found: {role_id}")
+            raise HTTPException(
+                status_code=404,
+                detail="Role not found",
+            )
+        
+        # Check if permission exists
+        permission = db.query(Permission).filter(Permission.id == permission_id).first()
+        if not permission:
+            logger.warning(f"Permission not found: {permission_id}")
+            raise HTTPException(
+                status_code=404,
+                detail="Permission not found",
+            )
+        
+        # Check if permission is assigned to role
+        role_permission = db.query(RolePermission).filter(
+            RolePermission.role_id == role_id,
+            RolePermission.permission_id == permission_id,
+            RolePermission.is_active == True
+        ).first()
+        
+        has_permission = role_permission is not None
+        
+        logger.info(f"Role {role_id} has permission {permission_id}: {has_permission}")
+        return {
+            "role_id": role_id,
+            "permission_id": permission_id,
+            "has_permission": has_permission,
+            "role_name": role.name,
+            "permission_name": permission.name
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking role permission: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while checking role permission"
         ) 
