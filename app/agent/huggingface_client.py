@@ -1,25 +1,22 @@
+import os
 import httpx
-from app.core.config import settings
+from typing import Any, Dict
 
-HUGGINGFACE_API_KEY = settings.HUGGINGFACE_API_KEY
-MODEL_ID = "meta-llama/Meta-Llama-3-8B-Instruct"  # Or your chosen model
+HUGGINGFACE_API_URL = os.getenv("HUGGINGFACE_API_URL")  # e.g. https://api-inference.huggingface.co/models/your-model
+HUGGINGFACE_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
 
-async def query_huggingface(prompt: str, temperature: float = 0.7) -> str:
-    headers = {
-        "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "inputs": prompt,
-        "parameters": {"temperature": temperature}
-    }
+class HuggingFaceClient:
+    def __init__(self, api_url: str = HUGGINGFACE_API_URL, token: str = HUGGINGFACE_API_TOKEN):
+        self.api_url = api_url
+        self.headers = {"Authorization": f"Bearer {token}"}
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"https://api-inference.huggingface.co/models/{MODEL_ID}",
-            headers=headers,
-            json=payload
-        )
-        response.raise_for_status()
-        result = response.json()
-        return result[0]["generated_text"] if isinstance(result, list) else result.get("generated_text", "")
+    async def generate(self, inputs: Any, parameters: Dict[str, Any] = {}) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                self.api_url,
+                headers=self.headers,
+                json={"inputs": inputs, "parameters": parameters},
+                timeout=30
+            )
+            resp.raise_for_status()
+            return resp.json()
