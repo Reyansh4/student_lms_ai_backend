@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 10MB
     LOG_BACKUP_COUNT: int = 5
     ACTIVITY_SERVICE_URL: str="http://localhost:8081/api/v1/activities"
+    SERVER_HOST: str = "http://localhost:8081"
     class Config:
         case_sensitive = True
         env_file = ".env"

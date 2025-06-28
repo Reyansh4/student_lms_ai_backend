@@ -23,4 +23,4 @@ class Permission(PermissionBase):
     # is_active is inherited from PermissionBase
 
     class Config:
-        orm_mode = True
+        from_attributes = True

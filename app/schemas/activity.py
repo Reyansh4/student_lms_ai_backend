@@ -1,9 +1,54 @@
-from pydantic import BaseModel, UUID4
+from pydantic import BaseModel, UUID4, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
 from enum import Enum
 from app.models.activity import DifficultyLevel, AccessType
+
+
+
+# Add new schemas for request/response
+class ClarificationQuestionsResponse(BaseModel):
+    activity_id: UUID
+    questions: List[Dict[str, str]]  # List of question objects with id and text
+    status: str
+
+class ClarificationAnswersRequest(BaseModel):
+    answers: Dict[str, str]  # Map of question_id to answer
+
+class FinalDescriptionResponse(BaseModel):
+    activity_id: UUID
+    final_description: str
+    status: str
+
+# Category Schemas
+class CategoryCreate(BaseModel):
+    name: str
+    description: str = ""
+
+class CategoryResponse(BaseModel):
+    id: UUID
+    name: str
+    description: str
+
+    class Config:
+        from_attributes = True
+
+# SubCategory Schemas
+class SubCategoryCreate(BaseModel):
+    category_id: UUID
+    name: str
+    description: str = ""
+
+class SubCategoryResponse(BaseModel):
+    id: UUID
+    category_id: UUID
+    name: str
+    description: str
+
+    class Config:
+        from_attributes = True
+
 
 class ActivityBase(BaseModel):
     name: str
@@ -35,7 +80,12 @@ class ActivityResponse(ActivityBase):
     created_at: datetime
     updated_at: datetime
 
+    # ← NEW nested fields
+    category: CategoryResponse
+    sub_category: SubCategoryResponse
+
     class Config:
+        # Pydantic v2 shorthand for from_attributes
         from_attributes = True
 
 # Activity Session schemas
@@ -66,3 +116,18 @@ class ActivitySession(ActivitySessionBase):
 
     class Config:
         from_attributes = True 
+
+
+
+
+# New schemas for extended start-activity
+class ExtendedStartActivityInput(BaseModel):
+    activity_id: Optional[UUID] = Field(None, description="Fetch by ID if provided")
+    activity_name: Optional[str] = Field(None, description="Name to fuzzy-match")
+    category_name: Optional[str] = Field(None, description="Category to fuzzy-match")
+    subcategory_name: Optional[str] = Field(None, description="Subcategory to fuzzy-match")
+
+class ExtendedStartActivityResponse(BaseModel):
+    status: str = Field(..., description="'started' for direct ID, 'matched' for fuzzy results")
+    final_description: Optional[str] = Field(None, description="Description from matched or fetched activity")
+    suggestions: Optional[List[Dict[str, Any]]] = Field(None, description="Top-k fuzzy matches with scores")

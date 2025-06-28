@@ -25,6 +25,8 @@ dependencies = [
     "langchain-community>=0.3.25",
     "langchain-openai>=0.3.22",
     "psycopg2>=2.9.10",
+    "rapidfuzz>=3.13.0",
+    "langfuse>=3.0.7",
 ]
 requires-python = ">=3.11"
 

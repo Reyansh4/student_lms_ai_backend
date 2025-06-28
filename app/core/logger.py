@@ -11,6 +11,15 @@ log_dir.mkdir(exist_ok=True)
 # Log format
 log_format = logging.Formatter(settings.LOG_FORMAT)
 
+# Suppress SQLAlchemy engine logs
+import logging
+
+# Suppress all SQLAlchemy logs
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.dialects").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
+
 def get_logger(name: str) -> logging.Logger:
     """
     Get a logger instance with the specified name.

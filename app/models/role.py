@@ -29,3 +29,10 @@ class Role(Base):
         back_populates="roles",
         viewonly=True,
     )
+
+    # Relationship to UserRole
+    user_roles = relationship(
+        "UserRole",
+        back_populates="role",
+        cascade="all, delete-orphan",
+    )
