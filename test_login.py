@@ -2,7 +2,7 @@ import requests
 import json
 
 # Login endpoint
-login_url = "http://localhost:8081/api/v1/auth/auth/login"
+login_url = "http://localhost:8000/api/v1/auth/auth/login"
 
 # Login data
 login_data = {

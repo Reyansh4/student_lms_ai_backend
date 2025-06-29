@@ -16,7 +16,7 @@ access_token = login_response.json().get("access_token")
 print("Access Token:", access_token)
 
 # Step 2: Use the token to fetch activities list (with trailing slash)
-activities_url = "http://localhost:8081/api/v1/activities/activities/"
+activities_url = "http://localhost:8000/api/v1/activities/activities/"
 headers = {
     "Authorization": f"Bearer {access_token}"
 }

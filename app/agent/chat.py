@@ -140,7 +140,15 @@ async def classify_intent(state: dict, config: dict) -> dict:
         intent="unknown"
     confidence = result.get("confidence", 0.0)
     operation = intent.replace("-activity","") if intent.endswith("-activity") else intent
-    output = {"intent": intent, "confidence": confidence, "operation": operation}
+    
+    # CRITICAL: Preserve the original state while adding classification results
+    output = {
+        **state,  # Keep all original state (including 'db', 'prompt', 'details', 'token')
+        "intent": intent, 
+        "confidence": confidence, 
+        "operation": operation
+    }
+    
     trace_function("classify_intent", {"prompt": prompt_text}, output)
     return output
 
@@ -158,39 +166,169 @@ async def describe_capabilities(state: dict, config: dict) -> dict:
     )}}
 
 async def start_activity_tool(state: dict, config: dict) -> dict:
+    prompt = state.get("prompt", "")
     payload = state.get("details", {})
-    token   = payload.get("token")  # extract the JWT we stashed earlier
+    token = payload.get("token")  # extract the JWT we stashed earlier
+    db = state.get("db")  # get database session
 
     url = f"{settings.SERVER_HOST}{settings.API_PREFIX}/agent/start-activity"
     headers = {}
+    logger.info(f"Token present: {token is not None}")
+    logger.info(f"Token length: {len(token) if token else 0}")
+    logger.info(f"URL: {url}")
+    logger.info(f"Original prompt: {prompt}")
+    
+    # Use AI to intelligently extract activity details from the prompt
+    extraction_prompt = f"""
+    Extract activity information from this user request. Return JSON with these fields:
+    - activity_name: The specific activity name mentioned (e.g., quiz, test, etc)
+    - category_name: The subject/category mentioned (e.g., math, science, physics, history)
+    - subcategory_name: The specific topic/subcategory mentioned (e.g., algebra, calculus, refractive index)
+    
+    User request: "{prompt}"
+    
+    Examples:
+    - "start math quiz" → {{"activity_name": "quiz", "category_name": "math", "subcategory_name": null}}
+    - "begin algebra practice" → {{"activity_name": "practice", "category_name": "math", "subcategory_name": "algebra"}}
+    - "I want to do physics experiments" → {{"activity_name": "experiments", "category_name": "physics", "subcategory_name": "refractive index"}}
+    """
+    
+    try:
+        # Extract structured information from the prompt
+        extraction_result = await chat_completion({"prompt": extraction_prompt}, {}, json_mode=True)
+        extracted_data = extraction_result.get("response", {})
+        
+        # Create the payload that the /start-activity endpoint expects
+        activity_payload = {
+            "activity_name": extracted_data.get("activity_name"),
+            "category_name": extracted_data.get("category_name"),
+            "subcategory_name": extracted_data.get("subcategory_name"),
+            "activity_id": None
+        }
+        
+        print(f"Extracted data: {extracted_data}")
+        print(f"Activity payload: {activity_payload}")
+        
+        # Try to find exact match in database first
+        if activity_payload["activity_name"]:
+            if not db:
+                print("Database session not available, will use HTTP endpoint for fuzzy matching")
+            else:
+                from app.models.activity import Activity
+                from app.models.activity_category import ActivityCategory
+                from app.models.activity_sub_category import ActivitySubCategory
+                from sqlalchemy.orm import joinedload
+                
+                print(f"=== DATABASE LOOKUP DEBUG ===")
+                print(f"Looking for: activity_name='{activity_payload['activity_name']}', category='{activity_payload['category_name']}', subcategory='{activity_payload['subcategory_name']}'")
+                
+                # Build query based on available extracted data
+                query = db.query(Activity).options(
+                    joinedload(Activity.category),
+                    joinedload(Activity.sub_category)
+                ).filter(Activity.is_active == True)
+                
+                # Add filters based on extracted data
+                if activity_payload["activity_name"]:
+                    query = query.filter(Activity.name.ilike(f"%{activity_payload['activity_name']}%"))
+                    print(f"Added activity name filter: '%{activity_payload['activity_name']}%'")
+                
+                # Handle category as foreign key - first find category ID by name
+                if activity_payload["category_name"]:
+                    category = db.query(ActivityCategory).filter(ActivityCategory.name.ilike(f"%{activity_payload['category_name']}%")).first()
+                    if category:
+                        query = query.filter(Activity.category_id == category.id)
+                        print(f"Filtering by category: {category.name} (ID: {category.id})")
+                    else:
+                        print(f"No category found matching: {activity_payload['category_name']}")
+                
+                # Handle subcategory as foreign key - first find subcategory ID by name
+                if activity_payload["subcategory_name"]:
+                    subcategory = db.query(ActivitySubCategory).filter(ActivitySubCategory.name.ilike(f"%{activity_payload['subcategory_name']}%")).first()
+                    if subcategory:
+                        query = query.filter(Activity.sub_category_id == subcategory.id)
+                        print(f"Filtering by subcategory: {subcategory.name} (ID: {subcategory.id})")
+                    else:
+                        print(f"No subcategory found matching: {activity_payload['subcategory_name']}")
+                
+                # Get all matches
+                matches = query.all()
+                print(f"Found {len(matches)} matches")
+                
+                # Debug: Show all matches
+                for i, match in enumerate(matches):
+                    print(f"Match {i+1}: {match.name} (ID: {match.id}, Category: {match.category.name if match.category else 'None'}, SubCategory: {match.sub_category.name if match.sub_category else 'None'})")
+                
+                if len(matches) == 1:
+                    # Single exact match - use it directly
+                    exact_match = matches[0]
+                    print(f"Found single exact match: {exact_match.name} (ID: {exact_match.id})")
+                    activity_payload["activity_id"] = str(exact_match.id)  # Convert UUID to string
+                    # Clear other fields since we're using ID for direct lookup
+                    activity_payload["activity_name"] = None
+                    activity_payload["category_name"] = None
+                    activity_payload["subcategory_name"] = None
+                else:
+                    print("No exact match found, will use fuzzy matching")
+                    
+                # Debug: Show all activities in database
+                all_activities = db.query(Activity).filter(Activity.is_active == True).all()
+                print(f"Total active activities in database: {len(all_activities)}")
+                for i, act in enumerate(all_activities[:5]):  # Show first 5
+                    print(f"Activity {i+1}: {act.name} (Category: {act.category.name if act.category else 'None'}, SubCategory: {act.sub_category.name if act.sub_category else 'None'})")
+                
+                print(f"=== END DATABASE LOOKUP DEBUG ===")
+        
+    except Exception as e:
+        logger.warning(f"Failed to extract structured data: {e}")
+        # Fallback: use the entire prompt as activity name
+        activity_payload = {
+            "activity_name": prompt,
+            "category_name": None,
+            "subcategory_name": None,
+            "activity_id": None
+        }
+        logger.info(f"Using fallback payload: {activity_payload}")
+    
     if token:
         headers["Authorization"] = f"Bearer {token}"
-
-    async with httpx.AsyncClient() as client_http:
-        resp = await client_http.post(
-            url,
-            json=payload,
-            headers=headers,      # <-- pass the user’s token here
-            timeout=10
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-    if data["status"] == "started":
-        msg = (
-            f"Great! I'm Leena AI. I got your input and will start the activity:\n\n"
-            f"**{data['final_description']}**\n\n"
-            "Shall I begin now?"
-        )
+        logger.info(f"Authorization header set: Bearer {token[:20]}...")
     else:
-        sug = "\n".join(f"- {s['name']} ({s['score']}%)" for s in data["suggestions"])
-        msg = (
-            "I found several activities matching your request:\n"
-            + sug +
-            "\n\nWhich one would you like to start?"
-        )
+        logger.error("No token found in payload details")
 
-    return {"result": {"message": msg}}
+    try:
+        async with httpx.AsyncClient() as client_http:
+            resp = await client_http.post(
+                url,
+                json=activity_payload,
+                headers=headers,      # <-- pass the user's token here
+                timeout=10
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        if data["status"] == "started":
+            msg = (
+                f"Great! I'm Leena AI. I got your input and will start the activity:\n\n"
+                f"**{data['final_description']}**\n\n"
+                "Shall I begin now?"
+            )
+        else:
+            sug = "\n".join(f"- {s['name']}" for s in data["suggestions"])
+            msg = (
+                "I found several activities matching your request:\n"
+                + sug +
+                "\n\nWhich one would you like to start?"
+            )
+
+        return {"result": {"message": msg}}
+        
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error: {e.response.status_code} - {e.response.text}")
+        return {"result": {"error": f"HTTP error: {e.response.status_code} - {e.response.text}"}}
+    except Exception as e:
+        logger.error(f"Start activity failed: {str(e)}")
+        return {"result": {"error": f"Start activity failed: {str(e)}"}}
 
 async def route_activity(state: dict, config: dict) -> dict:
     op = state.get("operation")
@@ -218,7 +356,8 @@ def route_from_classify_intent(state):
     elif intent in {"create-activity", "edit-activity", "delete-activity", "list-activities"}:
         return "route_activity"
     else:
-        return None  # or END if you want to terminate
+        # For unknown intents, route to route_activity which will handle the error
+        return "route_activity"
 
 workflow.add_conditional_edges("classify_intent", route_from_classify_intent)
 
@@ -236,7 +375,7 @@ async def run_agent(input_data: dict) -> dict:
     if langfuse:
         trace = langfuse.trace(name="run_agent")
         trace.input = input_data
-    state = {"prompt": input_data.get("prompt", ""), "details": input_data.get("details", {})}
+    state = {"prompt": input_data.get("prompt", ""), "details": input_data.get("details", {}), "db": input_data.get("db")}
     result = await agent.ainvoke(state)
     output = {"intent": result.get("intent", "unknown"), "result": result.get("result", {})}
     if trace:

@@ -32,11 +32,12 @@ router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
-@router.post("/agent/chat", response_model=AgentOutput)
+@router.post("/chat", response_model=AgentOutput)
 async def agent_chat(
     input: AgentInput,
     request: Request,
     token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
 ):
     # ---- Logging incoming request ----
     logger.info("=== /agent/chat called ===")
@@ -49,6 +50,7 @@ async def agent_chat(
         # merge the token into the details so downstream tools can use it
         payload = input.model_dump()
         payload.setdefault("details", {})["token"] = token
+        payload["db"] = db  # Add database session to payload
 
         # run through your LangGraph-based agent
         response = await run_agent(payload)
