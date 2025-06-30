@@ -120,6 +120,7 @@ async def classify_intent(state: dict, config: dict) -> dict:
         "- delete-activity\n"
         "- list-activities\n"
         "- start-activity: User wants to begin an activity\n"
+        "- generate-activity: User wants to generate any activity (quiz, lesson, assignment, etc.) based on a description (including markdown)\n"
         "- greetings: User is greeting the agent\n"
         "- capabilities: User asks what you can do\n"
         "Return JSON with 'intent' and 'confidence'.\n"
@@ -135,7 +136,7 @@ async def classify_intent(state: dict, config: dict) -> dict:
         elif "start" in text: intent="start-activity"
         result = {"intent": intent, "confidence": 0.5}
     intent = result.get("intent", "unknown").lower()
-    valid_intents = {"create-activity","edit-activity","delete-activity","list-activities","start-activity","greetings","capabilities"}
+    valid_intents = {"create-activity","edit-activity","delete-activity","list-activities","start-activity","generate-activity","greetings","capabilities"}
     if intent not in valid_intents:
         intent="unknown"
     confidence = result.get("confidence", 0.0)
@@ -308,11 +309,20 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
             data = resp.json()
 
         if data["status"] == "started":
-            msg = (
-                f"Great! I'm Leena AI. I got your input and will start the activity:\n\n"
-                f"**{data['final_description']}**\n\n"
-                "Shall I begin now?"
-            )
+            final_description = data.get("final_description", "")
+            if final_description:
+                # Recursively invoke the agent with the final_description as the new prompt
+                print(f"Recursively invoking agent with final_description: {final_description}")
+                new_state = {
+                    "prompt": final_description,
+                    "details": payload,
+                    "db": db
+                }
+                result = await agent.ainvoke(new_state)
+                # Return the result of the recursive invocation
+                msg = result.get("result", {}).get("message", "Activity executed, but no message returned.")
+            else:
+                msg = "Activity started, but no description was found."
         else:
             sug = "\n".join(f"- {s['name']}" for s in data["suggestions"])
             msg = (
@@ -337,12 +347,21 @@ async def route_activity(state: dict, config: dict) -> dict:
     result = await activity_crud({"operation": op, "payload": state.get("details", {})}, {})
     return {"result": result.get("result")}
 
+async def generate_activity_handler(state: dict, config: dict) -> dict:
+    prompt = state.get("prompt", "")
+    result = await chat_completion({"prompt": prompt}, {}, json_mode=False)
+    questions = result.get("response", {}).get("text", result.get("response", ""))
+    message = f"{questions}"
+    prompt = state.get("prompt", "")
+    return {"result": {"message": message}}
+
 # Build workflow
 workflow.add_node("classify_intent", classify_intent)
 workflow.add_node("greet_user", greet_user)
 workflow.add_node("describe_capabilities", describe_capabilities)
 workflow.add_node("start_activity_tool", start_activity_tool)
 workflow.add_node("route_activity", route_activity)
+workflow.add_node("generate_activity_handler", generate_activity_handler)
 
 # Transitions
 def route_from_classify_intent(state):
@@ -353,6 +372,8 @@ def route_from_classify_intent(state):
         return "describe_capabilities"
     elif intent == "start-activity":
         return "start_activity_tool"
+    elif intent == "generate-activity":
+        return "generate_activity_handler"
     elif intent in {"create-activity", "edit-activity", "delete-activity", "list-activities"}:
         return "route_activity"
     else:
@@ -363,7 +384,7 @@ workflow.add_conditional_edges("classify_intent", route_from_classify_intent)
 
 # Finish points
 workflow.set_entry_point("classify_intent")
-for node in ["greet_user","describe_capabilities","start_activity_tool","route_activity"]:
+for node in ["greet_user","describe_capabilities","start_activity_tool","route_activity","generate_activity_handler"]:
     workflow.set_finish_point(node)
 
 # Compile agent
