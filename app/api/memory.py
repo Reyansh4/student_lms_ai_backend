@@ -35,7 +35,7 @@ class SessionSchema(BaseModel):
     updated_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class MessageSchema(BaseModel):
     message_id: str
@@ -48,7 +48,7 @@ class MessageSchema(BaseModel):
     topic: Optional[str]
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class CreateMessageRequest(BaseModel):
     role: Literal["user", "assistant"]
