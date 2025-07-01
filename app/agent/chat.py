@@ -15,6 +15,9 @@ from app.api.deps import get_db, get_current_user
 from app.models.user import User
 from app.schemas.activity import ExtendedStartActivityInput, ExtendedStartActivityResponse
 from app.memory.store import InMemoryStore
+from app.tools.swagger_loader import get_openapi_spec, clear_openapi_spec_cache
+from app.tools.swagger_connectors import register_swagger_tools
+from app.agent.tools.activity_tools import create_activity as create_activity_tool
 # Configure logging
 logger = get_logger(__name__)
 
@@ -29,6 +32,7 @@ client = AsyncAzureOpenAI(
 # Base URL for your Activity service
 ACTIVITY_SERVICE_URL = settings.ACTIVITY_SERVICE_URL
 
+
 # Initialize LangGraph workflow
 workflow = StateGraph(dict)
 store = InMemoryStore()
@@ -37,7 +41,9 @@ store = InMemoryStore()
 # logger.info("Langfuse tracing initialized")
 # Optional Langfuse tracing
 
-
+tools = [create_activity_tool]
+# Note: We're not using bound_llm since AsyncAzureOpenAI doesn't support bind_tools
+# The create_activity_tool will be called directly in the create_activity_handler
 # def trace_function(func_name, input_data, output_data=None, error=None):
 #     if not langfuse_client:
 #         return
@@ -154,6 +160,56 @@ async def classify_intent(state: dict, config: dict) -> dict:
     prompt_text = state.get("prompt", "")
     logger.debug(f"Prompt text: {prompt_text}")
     
+    # First, check for spelling mistakes in the prompt
+    spell_check_prompt = f"""
+    Check the following text for spelling mistakes and suggest corrections. 
+    Focus on educational terms, subjects, and activity-related words.
+    
+    Text: "{prompt_text}"
+    
+    Return JSON with:
+    - has_spelling_errors: boolean
+    - corrected_text: string (original text if no errors)
+    - suggestions: array of corrected words with their original misspellings
+    
+    Examples:
+    - "creat a math quiz" → {{"has_spelling_errors": true, "corrected_text": "create a math quiz", "suggestions": [{{"original": "creat", "corrected": "create"}}]}}
+    - "start a phisics experiment" → {{"has_spelling_errors": true, "corrected_text": "start a physics experiment", "suggestions": [{{"original": "phisics", "corrected": "physics"}}]}}
+    - "hello there" → {{"has_spelling_errors": false, "corrected_text": "hello there", "suggestions": []}}
+    """
+    
+    try:
+        spell_check_result = await chat_completion({"prompt": spell_check_prompt}, {}, json_mode=True)
+        spell_check_data = spell_check_result.get("response", {})
+        logger.debug(f"Spell check result: {spell_check_data}")
+        
+        has_spelling_errors = spell_check_data.get("has_spelling_errors", False)
+        corrected_text = spell_check_data.get("corrected_text", prompt_text)
+        suggestions = spell_check_data.get("suggestions", [])
+        
+        # If there are spelling errors, ask user to confirm
+        if has_spelling_errors and suggestions:
+            suggestions_text = ", ".join([f"'{s['original']}' → '{s['corrected']}'" for s in suggestions])
+            spell_correction_message = f"🤔 I noticed some spelling in your request. Did you mean:\n\n**{suggestions_text}**\n\n**Original:** {prompt_text}\n**Corrected:** {corrected_text}\n\nPlease confirm if this is what you meant, or rephrase your request."
+            
+            # Return early with spell correction request
+            output = {
+                **state,
+                "intent": "spell-correction",
+                "confidence": 0.0,
+                "operation": "spell-correction",
+                "corrected_text": corrected_text,
+                "suggestions": suggestions,
+                "spell_correction_message": spell_correction_message
+            }
+            logger.debug(f"Spelling errors detected, returning correction request: {output}")
+            return output
+            
+    except Exception as e:
+        logger.warning(f"Spell check failed: {e}, proceeding with original text")
+        corrected_text = prompt_text
+    
+    # Proceed with intent classification using corrected text
     classification_prompt = (
         "Classify the user's intent into one of these categories:\n"
         "- create-activity\n"
@@ -165,7 +221,7 @@ async def classify_intent(state: dict, config: dict) -> dict:
         "- greetings: User is greeting the agent\n"
         "- capabilities: User asks what you can do\n"
         "Return JSON with 'intent' and 'confidence'.\n"
-        f"User input: '{prompt_text}'"
+        f"User input: '{corrected_text}'"
     )
     logger.debug(f"Classification prompt: {classification_prompt}")
     
@@ -202,7 +258,8 @@ async def classify_intent(state: dict, config: dict) -> dict:
         **state,  # Keep all original state (including 'db', 'prompt', 'details', 'token')
         "intent": intent, 
         "confidence": confidence, 
-        "operation": operation
+        "operation": operation,
+        "corrected_text": corrected_text
     }
     
     logger.debug(f"Final output: {output}")
@@ -235,6 +292,18 @@ async def describe_capabilities(state: dict, config: dict) -> dict:
     )}}
     logger.debug(f"Describe capabilities result: {result}")
     logger.debug(f"=== DESCRIBE_CAPABILITIES SUCCESS ===")
+    return result
+
+async def spell_correction_handler(state: dict, config: dict) -> dict:
+    logger.debug(f"=== SPELL_CORRECTION_HANDLER START ===")
+    logger.debug(f"Input state: {state}")
+    logger.debug(f"Config: {config}")
+    
+    spell_correction_message = state.get("spell_correction_message", "I noticed some spelling issues. Please rephrase your request.")
+    
+    result = {"result": {"message": spell_correction_message}}
+    logger.debug(f"Spell correction handler result: {result}")
+    logger.debug(f"=== SPELL_CORRECTION_HANDLER SUCCESS ===")
     return result
 
 async def start_activity_tool(state: dict, config: dict) -> dict:
@@ -286,13 +355,32 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
         
         logger.debug(f"Extraction result: {extraction_result}")
         logger.debug(f"Extracted data: {extracted_data}")
+
+        # Get user information from state
+        details = state.get("details", {})
+        user_id = details.get("user_id")
+        if not user_id:
+            user_id = state.get("user_id")
+        if not user_id:
+            # Fetch the first user from the database
+            from app.models.user import User
+            db_session = state.get("db")
+            if db_session:
+                first_user = db_session.query(User).order_by(User.created_at).first()
+                if first_user:
+                    user_id = (first_user.id)
+                else:
+                    raise ValueError("No users found in the database to use as created_by.")
+            else:
+                raise ValueError("Database session not available to fetch a user.")
         
         # Create the payload that the /start-activity endpoint expects
         activity_payload = {
             "activity_name": extracted_data.get("activity_name"),
             "category_name": extracted_data.get("category_name"),
             "subcategory_name": extracted_data.get("subcategory_name"),
-            "activity_id": None
+            "activity_id": None,
+            "created_by":  user_id
         }
         
         print(f"Extracted data: {extracted_data}")
@@ -345,6 +433,8 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
                         query = query.filter(Activity.sub_category_id == subcategory.id)
                         print(f"Filtering by subcategory: {subcategory.name} (ID: {subcategory.id})")
                         logger.debug(f"Filtering by subcategory: {subcategory.name} (ID: {subcategory.id})")
+                        if subcategory.description is None:
+                            subcategory.description = ""
                     else:
                         print(f"No subcategory found matching: {activity_payload['subcategory_name']}")
                         logger.debug(f"No subcategory found matching: {activity_payload['subcategory_name']}")
@@ -387,12 +477,36 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
     except Exception as e:
         logger.warning(f"Failed to extract structured data: {e}")
         logger.debug(f"Exception details: {e}")
+
+        # Get user information from state
+        details = state.get("details", {})
+        user_id = details.get("user_id")
+        if not user_id:
+            user_id = state.get("user_id")
+        
+        # Also check if user_id is directly in the state (from run_agent input)
+        if not user_id:
+            user_id = state.get("user_id")
+        
+        if not user_id:
+            # Fetch the first user from the database
+            from app.models.user import User
+            db_session = state.get("db")
+            if db_session:
+                first_user = db_session.query(User).order_by(User.created_at).first()
+                if first_user:
+                    user_id = str(first_user.id)
+                else:
+                    raise ValueError("No users found in the database to use as created_by.")
+            else:
+                raise ValueError("Database session not available to fetch a user.")
         # Fallback: use the entire prompt as activity name
         activity_payload = {
             "activity_name": prompt,
             "category_name": None,
             "subcategory_name": None,
-            "activity_id": None
+            "activity_id": None,
+            "created_by": user_id
         }
         logger.info(f"Using fallback payload: {activity_payload}")
         logger.debug(f"Fallback activity payload: {activity_payload}")
@@ -492,13 +606,212 @@ async def generate_activity_handler(state: dict, config: dict) -> dict:
     prompt = state.get("prompt", "")
     return {"result": {"message": message}}
 
+async def create_activity_handler(state: dict, config: dict) -> dict:
+    logger.debug(f"=== CREATE_ACTIVITY_HANDLER START ===")
+    logger.debug(f"Input state: {state}")
+    logger.debug(f"Config: {config}")
+    
+    prompt = state.get("prompt", "")
+    logger.debug(f"Prompt: {prompt}")
+    
+    # Use AI to extract activity creation details from the prompt
+    extraction_prompt = f"""
+    Extract activity creation information from this user request. Return JSON with these fields:
+    - name: The activity name/title
+    - description: A detailed description of the activity
+    - category_name: The subject/category (e.g., math, science, physics, history)
+    - subcategory_name: The specific topic/subcategory (e.g., algebra, calculus, refractive index)
+    - difficulty_level: One of "Beginner", "Intermediate", or "Advanced"
+    - final_description: A detailed summary of what needs to be done for this activity. The activity will be executed based on the final_description only.
+
+    User request: "{prompt}"
+
+    Examples:
+    - "Create a math quiz about algebra for beginners" → {{
+        "name": "Algebra Quiz",
+        "description": "A quiz covering basic algebra concepts",
+        "category_name": "math",
+        "subcategory_name": "algebra",
+        "difficulty_level": "Beginner",
+        "final_description": "Prepare a set of beginner-level algebra questions and compile them into a quiz format for students to solve."
+    }}
+    - "Make a physics experiment on refractive index for advanced students" → {{
+        "name": "Refractive Index Experiment",
+        "description": "Advanced experiment to measure and analyze refractive index",
+        "category_name": "physics",
+        "subcategory_name": "refractive index",
+        "difficulty_level": "Advanced",
+        "final_description": "Design and describe an advanced laboratory experiment where students measure the refractive index of various materials using lasers and prisms, analyze the results, and discuss the implications."
+    }}
+    """
+    
+    logger.debug(f"Extraction prompt: {extraction_prompt}")
+    
+    try:
+        # Extract structured information from the prompt
+        extraction_result = await chat_completion({"prompt": extraction_prompt}, {}, json_mode=True)
+        extracted_data = extraction_result.get("response", {})
+        
+        logger.debug(f"Extraction result: {extraction_result}")
+        logger.debug(f"Extracted data: {extracted_data}")
+        
+        # Get user information from state
+        details = state.get("details", {})
+        user_id = details.get("user_id")
+        if not user_id:
+            user_id = state.get("user_id")
+        if not user_id:
+            # Fetch the first user from the database
+            from app.models.user import User
+            db_session = state.get("db")
+            if db_session:
+                first_user = db_session.query(User).order_by(User.created_at).first()
+                if first_user:
+                    user_id = str(first_user.id)
+                else:
+                    raise ValueError("No users found in the database to use as created_by.")
+            else:
+                raise ValueError("Database session not available to fetch a user.")
+        
+        # Get database session for looking up category and subcategory IDs
+        db = state.get("db")
+        if not db:
+            raise ValueError("Database session not available")
+        
+        # Look up category and subcategory IDs by name
+        from app.models.activity_category import ActivityCategory
+        from app.models.activity_sub_category import ActivitySubCategory
+        
+        category_name = extracted_data.get("category_name", "General")
+        subcategory_name = extracted_data.get("subcategory_name", "General")
+        
+        # Find category by name using fuzzy matching
+        # First try exact match
+        category = db.query(ActivityCategory).filter(ActivityCategory.name.ilike(f"%{category_name}%")).first()
+        
+        # If no exact match, try fuzzy matching with common variations
+        if not category:
+            # Try different variations of the category name
+            variations = [
+                category_name.lower(),
+                category_name.title(),
+                category_name.capitalize(),
+                category_name.replace(" ", ""),
+                category_name.replace(" ", "_"),
+                category_name.replace(" ", "-")
+            ]
+            
+            for variation in variations:
+                category = db.query(ActivityCategory).filter(
+                    ActivityCategory.name.ilike(f"%{variation}%")
+                ).first()
+                if category:
+                    logger.info(f"Found category '{category.name}' using fuzzy match for '{category_name}'")
+                    break
+        
+        # If still no match, create new category
+        if not category:
+            category = ActivityCategory(name=category_name, description=f"Activity of {category_name}")
+            db.add(category)
+            db.flush()
+            logger.info(f"Created new category: {category_name} with ID: {category.id}")
+            db.commit()
+        
+        # Find subcategory by name using fuzzy matching
+        # First try exact match within the category
+        subcategory = db.query(ActivitySubCategory).filter(
+            ActivitySubCategory.name.ilike(f"%{subcategory_name}%"),
+            ActivitySubCategory.category_id == category.id
+        ).first()
+        
+        # If no exact match, try fuzzy matching with common variations
+        if not subcategory:
+            # Try different variations of the subcategory name
+            variations = [
+                subcategory_name.lower(),
+                subcategory_name.title(),
+                subcategory_name.capitalize(),
+                subcategory_name.replace(" ", ""),
+                subcategory_name.replace(" ", "_"),
+                subcategory_name.replace(" ", "-")
+            ]
+            
+            for variation in variations:
+                subcategory = db.query(ActivitySubCategory).filter(
+                    ActivitySubCategory.name.ilike(f"%{variation}%"),
+                    ActivitySubCategory.category_id == category.id
+                ).first()
+                if subcategory:
+                    logger.info(f"Found subcategory '{subcategory.name}' using fuzzy match for '{subcategory_name}'")
+                    break
+        
+        # If still no match, create new subcategory
+        if not subcategory:
+            subcategory = ActivitySubCategory(
+                name=subcategory_name,
+                category_id=category.id,
+                description=""
+            )
+            db.add(subcategory)
+            db.flush()
+            logger.info(f"Created new subcategory: {subcategory_name} with ID: {subcategory.id}")
+            db.commit()
+        
+        # Prepare payload for create_activity tool
+        logger.info(f"Extracted data: {extracted_data}")
+        activity_payload = {
+            "name": extracted_data.get("name", "New Activity"),
+            "description": extracted_data.get("description", ""),
+            "category_id": str(category.id),
+            "sub_category_id": str(subcategory.id),
+            "difficulty_level": extracted_data.get("difficulty_level", "Beginner"),
+            "created_by": user_id,
+            "access_type": "private"
+        }
+        
+        # Add final_description if available
+        if "final_description" in extracted_data:
+            activity_payload["final_description"] = extracted_data["final_description"]
+
+        # Add ai_guide if available
+        if "ai_guide" in extracted_data:
+            activity_payload["ai_guide"] = extracted_data["ai_guide"]
+        
+        if not activity_payload.get("final_description"):
+            # Generate with AI or set a default
+            activity_payload["final_description"] = f"This activity covers {activity_payload['name']} in detail."
+        
+        logger.info(f"Activity payload: {activity_payload}")
+        
+        # Call the create_activity tool
+        tool_result = await create_activity_tool.ainvoke({"payload": activity_payload})
+        logger.debug(f"Create activity tool result: {tool_result}")
+        
+        # Format success message
+        message = f"✅ Activity created successfully!\n\n**{tool_result['name']}**\n\n**Description:** {tool_result['description']}\n**Category:** {tool_result['category']}\n**Subcategory:** {tool_result['subcategory']}\n**Difficulty:** {tool_result['difficulty_level']}\n**Access Type:** {tool_result['access_type']}\n\nActivity ID: {tool_result['id']}"
+        
+        result = {"result": {"message": message}}
+        logger.debug(f"Create activity handler result: {result}")
+        logger.debug(f"=== CREATE_ACTIVITY_HANDLER SUCCESS ===")
+        return result
+        
+    except Exception as e:
+        logger.error(f"=== CREATE_ACTIVITY_HANDLER ERROR ===")
+        logger.error(f"Error details: {e}")
+        error_message = f"❌ Failed to create activity: {str(e)}"
+        result = {"result": {"error": error_message}}
+        logger.debug(f"=== CREATE_ACTIVITY_HANDLER EXCEPTION ===")
+        return result
+
 # Build workflow
 workflow.add_node("classify_intent", classify_intent)
 workflow.add_node("greet_user", greet_user)
 workflow.add_node("describe_capabilities", describe_capabilities)
+workflow.add_node("spell_correction_handler", spell_correction_handler)
 workflow.add_node("start_activity_tool", start_activity_tool)
 workflow.add_node("route_activity", route_activity)
 workflow.add_node("generate_activity_handler", generate_activity_handler)
+workflow.add_node("create_activity_handler", create_activity_handler)
 
 # Transitions
 def route_from_classify_intent(state):
@@ -514,12 +827,18 @@ def route_from_classify_intent(state):
     elif intent == "capabilities":
         logger.debug("Routing to: describe_capabilities")
         return "describe_capabilities"
+    elif intent == "spell-correction":
+        logger.debug("Routing to: spell_correction_handler")
+        return "spell_correction_handler"
     elif intent == "start-activity":
         logger.debug("Routing to: start_activity_tool")
         return "start_activity_tool"
     elif intent == "generate-activity":
         return "generate_activity_handler"
-    elif intent in {"create-activity", "edit-activity", "delete-activity", "list-activities"}:
+    elif intent == "create-activity":
+        logger.debug("Routing to: create_activity_handler")
+        return "create_activity_handler"
+    elif intent in {"edit-activity", "delete-activity", "list-activities"}:
         logger.debug("Routing to: route_activity")
         return "route_activity"
     else:
@@ -531,14 +850,25 @@ workflow.add_conditional_edges("classify_intent", route_from_classify_intent)
 
 # Finish points
 workflow.set_entry_point("classify_intent")
-for node in ["greet_user","describe_capabilities","start_activity_tool","route_activity","generate_activity_handler"]:
+for node in ["greet_user","describe_capabilities","spell_correction_handler","start_activity_tool","route_activity","generate_activity_handler","create_activity_handler"]:
     workflow.set_finish_point(node)
 
 # Compile agent
 agent = workflow.compile()
 logger.info("Agent workflow compiled successfully")
+_lazy_swagger_initialized = False
 
 async def run_agent(input_data: dict) -> dict:
+    global _lazy_swagger_initialized
+    # Cold-start: register Swagger tools on first agent request
+    # print(f"Running agent")
+    # print(f"Lazy swagger initialized: {_lazy_swagger_initialized}")
+    # if not _lazy_swagger_initialized:
+    #     clear_openapi_spec_cache()
+    #     spec = get_openapi_spec()
+    #     register_swagger_tools(workflow, spec)
+    #     _lazy_swagger_initialized = True
+    #     logger.info(f"Registered Swagger tools: {list(workflow.nodes.keys())}")
     logger.debug(f"=== RUN_AGENT START ===")
     logger.debug(f"Input data: {input_data}")
     
@@ -557,7 +887,7 @@ async def run_agent(input_data: dict) -> dict:
     store.add_message(session.session_id, "user", prompt)
     history = store.get_history(session.session_id)
     messages = [{"role": m.role, "content": m.content} for m in history]
-    state = {"prompt":prompt , "details": input_data.get("details", {}), "db": input_data.get("db"), "messages": messages}
+    state = {"prompt":prompt , "details": input_data.get("details", {}), "db": input_data.get("db"), "messages": messages, "user_id": user_id}
     logger.debug(f"Initial state: {state}")
     
     logger.debug(f"Invoking agent workflow...")

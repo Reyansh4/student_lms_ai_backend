@@ -8,6 +8,8 @@ from app.db.session import engine
 # Import agent router
 from app.agent.routers import router as agent_router
 from app.api.memory import router as memory_router
+# from app.tools.swagger_loader import clear_openapi_spec_cache, get_openapi_spec
+# from app.tools.swagger_connectors import register_swagger_tools
 
 # Initialize logger
 logger = get_logger(__name__)
