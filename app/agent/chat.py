@@ -1,5 +1,5 @@
 import json
-import logging
+from app.core.logger import get_logger
 from typing import Any, Dict
 import httpx
 
@@ -14,9 +14,9 @@ from app.models.activity import Activity
 from app.api.deps import get_db, get_current_user
 from app.models.user import User
 from app.schemas.activity import ExtendedStartActivityInput, ExtendedStartActivityResponse
-
+from app.memory.store import InMemoryStore
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Load Azure configuration and create OpenAI client
 azure_config = load_azure_config()
@@ -31,7 +31,7 @@ ACTIVITY_SERVICE_URL = settings.ACTIVITY_SERVICE_URL
 
 # Initialize LangGraph workflow
 workflow = StateGraph(dict)
-
+store = InMemoryStore()
 # langfuse_client = Langfuse()
 # assert langfuse_client.auth_check(), "Langfuse authentication failed"
 # logger.info("Langfuse tracing initialized")
@@ -546,15 +546,27 @@ async def run_agent(input_data: dict) -> dict:
     # if langfuse:
     #     trace = langfuse.trace(name="run_agent")
     #     trace.input = input_data
+    user_id = input_data.get("user_id")
+    if not user_id:
+        raise ValueError("user_id is required for session memory")
     
-    state = {"prompt": input_data.get("prompt", ""), "details": input_data.get("details", {}), "db": input_data.get("db")}
+    # 1) Get or create an in-memory session
+    session = store.get_or_create_session(user_id)
+    prompt=input_data.get("prompt", "")
+    # 2) Record the user turn
+    store.add_message(session.session_id, "user", prompt)
+    history = store.get_history(session.session_id)
+    messages = [{"role": m.role, "content": m.content} for m in history]
+    state = {"prompt":prompt , "details": input_data.get("details", {}), "db": input_data.get("db"), "messages": messages}
     logger.debug(f"Initial state: {state}")
     
     logger.debug(f"Invoking agent workflow...")
     result = await agent.ainvoke(state)
     logger.debug(f"Agent workflow result: {result}")
+    reply = result.get("result", {}).get("message", "")
+    store.add_message(session.session_id, "assistant", reply)
     
-    output = {"intent": result.get("intent", "unknown"), "result": result.get("result", {})}
+    output = {"intent": result.get("intent", "unknown"), "result": result.get("result", {}),"session_id": session.session_id}
     logger.debug(f"Final output: {output}")
     
     if trace:
