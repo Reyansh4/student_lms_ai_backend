@@ -13,6 +13,11 @@ class AccessType(enum.Enum):
     PRIVATE = "private"
     GLOBAL = "global"
 
+class ActivityStatus(enum.Enum):
+    PENDING = "pending"
+    ACTIVE = "active"
+    DEACTIVE = "deactive"
+
 class Activity(Base):
     __tablename__ = "activity"
 
@@ -26,6 +31,7 @@ class Activity(Base):
     created_by = Column(UUID, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     ai_guide = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
+    status = Column(String(20), nullable=False, default=ActivityStatus.PENDING.value)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     final_description = Column(Text)

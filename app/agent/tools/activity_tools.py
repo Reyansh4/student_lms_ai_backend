@@ -27,6 +27,7 @@ class CreateActivityOutput(TypedDict):
     subcategory: str
     difficulty_level: str
     access_type: str
+    status: str
     created_at: str
 
 @tool(return_direct=True)
@@ -87,6 +88,7 @@ def create_activity(payload: CreateActivityInput) -> CreateActivityOutput:
             "subcategory": subcat.name,
             "difficulty_level": activity.difficulty_level.value,
             "access_type": activity.access_type.value,
+            "status": activity.status,
             "created_at": activity.created_at.isoformat(),
         })
 

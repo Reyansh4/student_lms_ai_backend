@@ -700,7 +700,7 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
         logger.debug(f"Create activity tool result: {tool_result}")
         
         # Format success message
-        message = f"✅ Activity created successfully!\n\n**{tool_result['name']}**\n\n**Description:** {tool_result['description']}\n**Category:** {tool_result['category']}\n**Subcategory:** {tool_result['subcategory']}\n**Difficulty:** {tool_result['difficulty_level']}\n**Access Type:** {tool_result['access_type']}\n\nActivity ID: {tool_result['id']}"
+        message = f"✅ Activity created successfully!\n\n**{tool_result['name']}**\n\n**Description:** {tool_result['description']}\n**Category:** {tool_result['category']}\n**Subcategory:** {tool_result['subcategory']}\n**Difficulty:** {tool_result['difficulty_level']}\n**Access Type:** {tool_result['access_type']}\n**Status:** {tool_result['status']}\n\nActivity ID: {tool_result['id']}"
         
         result = {"result": {"message": message}}
         logger.debug(f"Create activity handler result: {result}")
