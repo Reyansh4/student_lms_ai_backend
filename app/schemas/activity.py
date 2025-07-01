@@ -59,6 +59,7 @@ class ActivityBase(BaseModel):
     access_type: AccessType
     ai_guide: bool = False
     final_description: Optional[str] = None
+    created_by: UUID4
 
 class ActivityCreate(ActivityBase):
     pass
