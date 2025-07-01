@@ -18,6 +18,7 @@ from app.memory.store import InMemoryStore
 from app.tools.swagger_loader import get_openapi_spec, clear_openapi_spec_cache
 from app.tools.swagger_connectors import register_swagger_tools
 from app.agent.tools.activity_tools import create_activity as create_activity_tool
+from app.agent.evaluator_agent import evaluate_performance_tool
 # Configure logging
 logger = get_logger(__name__)
 
@@ -41,7 +42,7 @@ store = InMemoryStore()
 # logger.info("Langfuse tracing initialized")
 # Optional Langfuse tracing
 
-tools = [create_activity_tool]
+tools = [create_activity_tool, evaluate_performance_tool]
 # Note: We're not using bound_llm since AsyncAzureOpenAI doesn't support bind_tools
 # The create_activity_tool will be called directly in the create_activity_handler
 # def trace_function(func_name, input_data, output_data=None, error=None):
@@ -220,6 +221,7 @@ async def classify_intent(state: dict, config: dict) -> dict:
         "- generate-activity: User wants to generate any activity (quiz, lesson, assignment, etc.) based on a description (including markdown)\n"
         "- greetings: User is greeting the agent\n"
         "- capabilities: User asks what you can do\n"
+        "- evaluate-performance: User wants to evaluate the performance of an activity or overall performance\n"
         "Return JSON with 'intent' and 'confidence'.\n"
         f"User input: '{corrected_text}'"
     )
@@ -561,6 +563,43 @@ async def generate_activity_handler(state: dict, config: dict) -> dict:
     prompt = state.get("prompt", "")
     return {"result": {"message": message}}
 
+async def evaluate_performance_handler(state: dict, config: dict) -> dict:
+    logger.debug(f"=== EVALUATE_PERFORMANCE_HANDLER START ===")
+    logger.debug(f"Input state: {state}")
+    logger.debug(f"Config: {config}")
+    
+    try:
+        # Get session information
+        session_id = state.get("session_id")
+        if not session_id:
+            # Create a temporary session ID if none exists
+            user_id = state.get("user_id")
+            if user_id:
+                session = store.get_or_create_session(user_id)
+                session_id = session.session_id
+            else:
+                raise ValueError("No session ID or user ID available for evaluation")
+        
+        # Create the input for the evaluator tool
+        eval_input = {
+            "session_id": session_id,
+            "messages": state.get("messages", [])
+        }
+        
+        # Call the evaluate performance tool
+        result = await evaluate_performance_tool.ainvoke(eval_input)
+        logger.debug(f"Evaluate performance result: {result}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"=== EVALUATE_PERFORMANCE_HANDLER ERROR ===")
+        logger.error(f"Error details: {e}")
+        error_message = f"❌ Failed to evaluate performance: {str(e)}"
+        result = {"result": {"error": error_message}}
+        logger.debug(f"=== EVALUATE_PERFORMANCE_HANDLER EXCEPTION ===")
+        return result
+
 async def create_activity_handler(state: dict, config: dict) -> dict:
     logger.debug(f"=== CREATE_ACTIVITY_HANDLER START ===")
     logger.debug(f"Input state: {state}")
@@ -724,6 +763,7 @@ workflow.add_node("start_activity_tool", start_activity_tool)
 workflow.add_node("route_activity", route_activity)
 workflow.add_node("generate_activity_handler", generate_activity_handler)
 workflow.add_node("create_activity_handler", create_activity_handler)
+workflow.add_node("evaluate_performance_handler", evaluate_performance_handler)
 
 # Transitions
 def route_from_classify_intent(state):
@@ -753,6 +793,10 @@ def route_from_classify_intent(state):
     elif intent in {"edit-activity", "delete-activity", "list-activities"}:
         logger.debug("Routing to: route_activity")
         return "route_activity"
+    
+    elif intent == "evaluate-performance":
+        logger.debug("Routing to: evaluate_performance_handler")
+        return "evaluate_performance_handler"
     else:
         # For unknown intents, route to route_activity which will handle the error
         logger.debug("Unknown intent, routing to: route_activity")
@@ -762,7 +806,7 @@ workflow.add_conditional_edges("classify_intent", route_from_classify_intent)
 
 # Finish points
 workflow.set_entry_point("classify_intent")
-for node in ["greet_user","describe_capabilities","spell_correction_handler","start_activity_tool","route_activity","generate_activity_handler","create_activity_handler"]:
+for node in ["greet_user","describe_capabilities","spell_correction_handler","start_activity_tool","route_activity","generate_activity_handler","create_activity_handler","evaluate_performance_handler"]:
     workflow.set_finish_point(node)
 
 # Compile agent
