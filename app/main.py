@@ -7,7 +7,7 @@ from app.db.base import Base
 from app.db.session import engine
 # Import agent router
 from app.agent.routers import router as agent_router
-
+from app.api.memory import router as memory_router
 
 # Initialize logger
 logger = get_logger(__name__)
@@ -45,6 +45,9 @@ logger.info("API routers included")
 # Include agent router
 app.include_router(agent_router, prefix=f"{settings.API_PREFIX}/agent", tags=["agent"])
 logger.info("Agent router included")
+
+app.include_router(memory_router, prefix=f"{settings.API_PREFIX}/memory", tags=["memory"])
+logger.info("Memory router included")
 
 @app.get("/")
 def root():

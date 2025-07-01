@@ -38,6 +38,7 @@ async def agent_chat(
     request: Request,
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     # ---- Logging incoming request ----
     logger.info("=== /agent/chat called ===")
@@ -51,12 +52,14 @@ async def agent_chat(
         payload = input.model_dump()
         payload.setdefault("details", {})["token"] = token
         payload["db"] = db  # Add database session to payload
-
-        # run through your LangGraph-based agent
+        payload["user_id"] = str(current_user.id)
+        session_id = payload["details"].pop("session_id", None)
+        if session_id:
+            payload["session_id"] = session_id
         response = await run_agent(payload)
         logger.info("run_agent response: %s", response)
-
-        return AgentOutput(**response)
+        result_payload = {k: v for k, v in response.items() if k != "intent"}
+        return AgentOutput(intent=response["intent"], result=result_payload)
     except Exception as e:
         logger.exception("agent_chat failure")
         raise HTTPException(status_code=500, detail=str(e))
