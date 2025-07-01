@@ -24,3 +24,4 @@ class ActivityDocument(Base):
 
     # Relationships
     activity = relationship("Activity", back_populates="documents") 
+

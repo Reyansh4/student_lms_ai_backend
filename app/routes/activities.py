@@ -13,50 +13,9 @@ from app.services.generate_clearification_questions import generate_clarificatio
 from app.services.generate_final_description import generate_final_description
 from app.models.activity_sub_category import ActivitySubCategory
 from app.models.activity_category import ActivityCategory
+from app.schemas.activity import CategoryResponse, SubCategoryResponse, CategoryCreate,SubCategoryCreate,ClarificationQuestionsResponse,ClarificationAnswersRequest,FinalDescriptionResponse
+from sqlalchemy.orm import joinedload
 
-
-
-# Add new schemas for request/response
-class ClarificationQuestionsResponse(BaseModel):
-    activity_id: UUID
-    questions: List[Dict[str, str]]  # List of question objects with id and text
-    status: str
-
-class ClarificationAnswersRequest(BaseModel):
-    answers: Dict[str, str]  # Map of question_id to answer
-
-class FinalDescriptionResponse(BaseModel):
-    activity_id: UUID
-    final_description: str
-    status: str
-
-# Category Schemas
-class CategoryCreate(BaseModel):
-    name: str
-    description: str = ""
-
-class CategoryResponse(BaseModel):
-    id: UUID
-    name: str
-    description: str
-
-    class Config:
-        orm_mode = True
-
-# SubCategory Schemas
-class SubCategoryCreate(BaseModel):
-    category_id: UUID
-    name: str
-    description: str = ""
-
-class SubCategoryResponse(BaseModel):
-    id: UUID
-    category_id: UUID
-    name: str
-    description: str
-
-    class Config:
-        orm_mode = True
 
 
 # Initialize logger
@@ -562,3 +521,33 @@ async def generate_activity_final_description(
             status_code=500,
             detail=f"An error occurred while generating final description: {str(e)}"
         ) 
+    
+
+@router.get(
+    "/{activity_id}",
+    response_model=ActivityResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Fetch a single activity by its ID, including category and sub-category"
+)
+def get_activity_by_id(
+    activity_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    logger.info(f"User {current_user.email} fetching activity {activity_id}")
+    activity = (
+        db.query(Activity)
+          .options(
+              joinedload(Activity.category),
+              joinedload(Activity.sub_category)
+          )
+          .filter(Activity.id == activity_id)
+          .first()
+    )
+    if not activity:
+        logger.warning(f"Activity not found: {activity_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Activity not found"
+        )
+    return activity

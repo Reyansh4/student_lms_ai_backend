@@ -5,6 +5,9 @@ from app.core.logger import get_logger
 from app.routes import api_router
 from app.db.base import Base
 from app.db.session import engine
+# Import agent router
+from app.agent.routers import router as agent_router
+
 
 # Initialize logger
 logger = get_logger(__name__)
@@ -39,6 +42,10 @@ logger.info("CORS middleware configured")
 app.include_router(api_router, prefix=settings.API_PREFIX)
 logger.info("API routers included")
 
+# Include agent router
+app.include_router(agent_router, prefix=f"{settings.API_PREFIX}/agent", tags=["agent"])
+logger.info("Agent router included")
+
 @app.get("/")
 def root():
     """
@@ -66,13 +73,3 @@ async def shutdown_event():
     """
     logger.info("Application shutdown")
 
-if __name__ == "__main__":
-    import uvicorn
-    logger.info("Starting Uvicorn server")
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level=settings.LOG_LEVEL.lower()
-    ) 
