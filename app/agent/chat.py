@@ -698,6 +698,7 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
             db.add(category)
             db.flush()
             logger.info(f"Created new category: {category_name} with ID: {category.id}")
+            db.commit()
         
         # Find subcategory by name using fuzzy matching
         # First try exact match within the category
@@ -733,6 +734,7 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
             db.add(subcategory)
             db.flush()
             logger.info(f"Created new subcategory: {subcategory_name} with ID: {subcategory.id}")
+            db.commit()
         
         # Prepare payload for create_activity tool
         logger.info(f"Extracted data: {extracted_data}")
@@ -743,8 +745,20 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
             "sub_category_id": str(subcategory.id),
             "difficulty_level": extracted_data.get("difficulty_level", "Beginner"),
             "created_by": user_id,
-            "access_type": "private"  # Always PRIVATE for agent-created activities
+            "access_type": "private"
         }
+        
+        # Add final_description if available
+        if "final_description" in extracted_data:
+            activity_payload["final_description"] = extracted_data["final_description"]
+
+        # Add ai_guide if available
+        if "ai_guide" in extracted_data:
+            activity_payload["ai_guide"] = extracted_data["ai_guide"]
+        
+        if not activity_payload.get("final_description"):
+            # Generate with AI or set a default
+            activity_payload["final_description"] = f"This activity covers {activity_payload['name']} in detail."
         
         logger.info(f"Activity payload: {activity_payload}")
         
