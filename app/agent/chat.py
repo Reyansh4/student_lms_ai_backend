@@ -355,13 +355,32 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
         
         logger.debug(f"Extraction result: {extraction_result}")
         logger.debug(f"Extracted data: {extracted_data}")
+
+        # Get user information from state
+        details = state.get("details", {})
+        user_id = details.get("user_id")
+        if not user_id:
+            user_id = state.get("user_id")
+        if not user_id:
+            # Fetch the first user from the database
+            from app.models.user import User
+            db_session = state.get("db")
+            if db_session:
+                first_user = db_session.query(User).order_by(User.created_at).first()
+                if first_user:
+                    user_id = (first_user.id)
+                else:
+                    raise ValueError("No users found in the database to use as created_by.")
+            else:
+                raise ValueError("Database session not available to fetch a user.")
         
         # Create the payload that the /start-activity endpoint expects
         activity_payload = {
             "activity_name": extracted_data.get("activity_name"),
             "category_name": extracted_data.get("category_name"),
             "subcategory_name": extracted_data.get("subcategory_name"),
-            "activity_id": None
+            "activity_id": None,
+            "created_by":  user_id
         }
         
         print(f"Extracted data: {extracted_data}")
@@ -456,12 +475,36 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
     except Exception as e:
         logger.warning(f"Failed to extract structured data: {e}")
         logger.debug(f"Exception details: {e}")
+
+        # Get user information from state
+        details = state.get("details", {})
+        user_id = details.get("user_id")
+        if not user_id:
+            user_id = state.get("user_id")
+        
+        # Also check if user_id is directly in the state (from run_agent input)
+        if not user_id:
+            user_id = state.get("user_id")
+        
+        if not user_id:
+            # Fetch the first user from the database
+            from app.models.user import User
+            db_session = state.get("db")
+            if db_session:
+                first_user = db_session.query(User).order_by(User.created_at).first()
+                if first_user:
+                    user_id = str(first_user.id)
+                else:
+                    raise ValueError("No users found in the database to use as created_by.")
+            else:
+                raise ValueError("Database session not available to fetch a user.")
         # Fallback: use the entire prompt as activity name
         activity_payload = {
             "activity_name": prompt,
             "category_name": None,
             "subcategory_name": None,
-            "activity_id": None
+            "activity_id": None,
+            "created_by": user_id
         }
         logger.info(f"Using fallback payload: {activity_payload}")
         logger.debug(f"Fallback activity payload: {activity_payload}")
@@ -598,10 +641,20 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
         # Get user information from state
         details = state.get("details", {})
         user_id = details.get("user_id")
-        
-        # Also check if user_id is directly in the state (from run_agent input)
         if not user_id:
             user_id = state.get("user_id")
+        if not user_id:
+            # Fetch the first user from the database
+            from app.models.user import User
+            db_session = state.get("db")
+            if db_session:
+                first_user = db_session.query(User).order_by(User.created_at).first()
+                if first_user:
+                    user_id = str(first_user.id)
+                else:
+                    raise ValueError("No users found in the database to use as created_by.")
+            else:
+                raise ValueError("Database session not available to fetch a user.")
         
         # Get database session for looking up category and subcategory IDs
         db = state.get("db")
@@ -696,7 +749,7 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
         logger.info(f"Activity payload: {activity_payload}")
         
         # Call the create_activity tool
-        tool_result = await create_activity_tool.ainvoke(activity_payload)
+        tool_result = await create_activity_tool.ainvoke({"payload": activity_payload})
         logger.debug(f"Create activity tool result: {tool_result}")
         
         # Format success message

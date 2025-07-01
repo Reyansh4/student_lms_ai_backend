@@ -63,6 +63,11 @@ def create_activity(payload: CreateActivityInput) -> CreateActivityOutput:
             raise ValueError(f"Subcategory with ID {subcategory_id} not found")
         logger.info(f"Found subcategory: {subcat.name}")
 
+        from app.models.user import User
+        first_user = db.query(User).order_by(User.created_at).first()
+        if first_user:
+            user_id = str(first_user.id)
+
         # 3) Create activity
         activity = Activity(
             name=payload["name"],
@@ -71,7 +76,7 @@ def create_activity(payload: CreateActivityInput) -> CreateActivityOutput:
             sub_category_id=subcat.id,
             difficulty_level=DifficultyLevel(payload["difficulty_level"]),
             access_type=AccessType.PRIVATE,  # Always PRIVATE
-            created_by=payload.get("created_by")  # assuming you pass user_id here
+            created_by=user_id  # assuming you pass user_id here
         )
         db.add(activity)
         db.commit()
