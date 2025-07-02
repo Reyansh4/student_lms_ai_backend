@@ -124,32 +124,43 @@ async def activity_crud(
         logger.debug(f"Payload: {payload}")
         
         method_map = {
-            "create": ("post", "/activities"),
-            "list":   ("get",  "/activities"),
-            "edit":   ("put",  f"/activities/{payload.get('id')}"),
-            "delete": ("delete", f"/activities/{payload.get('id')}")
+            "create": ("post", ""),
+            "list":   ("get",  ""),
+            "list-activities": ("get", ""),
+            "edit":   ("put",  f"/{payload.get('id')}"),
+            "delete": ("delete", f"/{payload.get('id')}")
         }
         method, path = method_map[operation]
-        url = f"{ACTIVITY_SERVICE_URL}{path}"
+        url = f"{ACTIVITY_SERVICE_URL}{path}/" if path == "" else f"{ACTIVITY_SERVICE_URL}{path}"
         logger.debug(f"HTTP method: {method}")
         logger.debug(f"Path: {path}")
         logger.debug(f"Full URL: {url}")
-        
-        async with httpx.AsyncClient() as client_http:
-            resp = await client_http.request(method, url, json=payload if method != 'get' else None, timeout=10)
-            logger.debug(f"HTTP response status: {resp.status_code}")
-            logger.debug(f"HTTP response headers: {dict(resp.headers)}")
-            resp.raise_for_status()
-            result = resp.json()
-            logger.debug(f"HTTP response body: {result}")
-        
-        #trace_function("activity_crud", {"operation": operation, "payload": payload}, {"result": result})
+
+        # Prepare headers
+        headers = {}
+        if payload.get("token"):
+            headers["Authorization"] = f"Bearer {payload['token']}"
+
+        # For GET, use query params; for others, use JSON body
+        if method == "get":
+            # Only include valid query params
+            query_params = {k: v for k, v in payload.items() if k in {"category_name", "subcategory_name", "activity_name", "skip", "limit"} and v is not None}
+            async with httpx.AsyncClient() as client_http:
+                resp = await client_http.request(method, url, params=query_params, headers=headers, timeout=10)
+        else:
+            async with httpx.AsyncClient() as client_http:
+                resp = await client_http.request(method, url, json=payload, headers=headers, timeout=10)
+
+        logger.debug(f"HTTP response status: {resp.status_code}")
+        logger.debug(f"HTTP response headers: {dict(resp.headers)}")
+        resp.raise_for_status()
+        result = resp.json()
+        logger.debug(f"HTTP response body: {result}")
         logger.debug(f"=== ACTIVITY_CRUD SUCCESS ===")
         return {"result": result}
     except Exception as e:
         logger.error(f"=== ACTIVITY_CRUD ERROR ===")
         logger.error(f"Error details: {e}")
-        #trace_function("activity_crud", state, error=e)
         logger.error(f"Activity CRUD failed: {e}")
         raise
 
@@ -332,7 +343,7 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
     logger.debug(f"Database session present: {db is not None}")
 
     url = f"{settings.SERVER_HOST}{settings.API_PREFIX}/agent/start-activity"
-    headers = {}
+    headers = {"Authorization": f"Bearer {token}"}
     logger.info(f"Token present: {token is not None}")
     logger.info(f"Token length: {len(token) if token else 0}")
     logger.info(f"URL: {url}")
@@ -743,8 +754,8 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
         extraction_result = await chat_completion({"prompt": extraction_prompt}, {}, json_mode=True)
         extracted_data = extraction_result.get("response", {})
         
-        logger.debug(f"Extraction result: {extraction_result}")
-        logger.debug(f"Extracted data: {extracted_data}")
+        logger.debug(f"Extraction result after chat completion: {extraction_result}")
+        logger.debug(f"Extraction data after chat completion: {extracted_data}")
         
         # Get user information from state
         details = state.get("details", {})
@@ -857,12 +868,9 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
             "sub_category_id": str(subcategory.id),
             "difficulty_level": extracted_data.get("difficulty_level", "Beginner"),
             "created_by": user_id,
-            "access_type": "private"
+            "access_type": "private",
+            "final_description": extracted_data.get("final_description")
         }
-        
-        # Add final_description if available
-        if "final_description" in extracted_data:
-            activity_payload["final_description"] = extracted_data["final_description"]
 
         # Add ai_guide if available
         if "ai_guide" in extracted_data:

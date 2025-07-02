@@ -177,14 +177,24 @@ def create_activity(
 def list_activities(
     skip: int = 0,
     limit: int = 100,
+    category_name: str = Query(None),
+    subcategory_name: str = Query(None),
+    activity_name: str = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """List all activities with pagination"""
     logger.info(f"Listing activities for user: {current_user.email} (skip: {skip}, limit: {limit})")
     try:
-        total_length = db.query(Activity).count()
-        activities = db.query(Activity).offset(skip).limit(limit).all()
+        query = db.query(Activity)
+        if category_name:
+            query = query.join(ActivityCategory).filter(ActivityCategory.name.ilike(f"%{category_name}%"))
+        if subcategory_name:
+            query = query.join(ActivitySubCategory).filter(ActivitySubCategory.name.ilike(f"%{subcategory_name}%"))
+        if activity_name:
+            query = query.filter(Activity.name.ilike(f"%{activity_name}%"))
+        total_length = query.count()
+        activities = query.offset(skip).limit(limit).all()
         logger.info(f"Found {len(activities)} activities out of {total_length} total")
         
         return PaginatedActivityResponse(
@@ -551,3 +561,41 @@ def get_activity_by_id(
             detail="Activity not found"
         )
     return activity
+
+async def extract_list_filters(prompt: str) -> dict:
+    extraction_prompt = f"""
+    Extract activity listing filters from this user request. Return JSON with these fields:
+    - activity_name: The activity name/title to filter (or null)
+    - category_name: The subject/category to filter (or null)
+    - subcategory_name: The specific topic/subcategory to filter (or null)
+
+    User request: "{prompt}"
+
+    Examples:
+    - "Show me all activities" → {{"activity_name": null, "category_name": null, "subcategory_name": null}}
+    - "List math quizzes for trignometry" → {{"activity_name": "quiz", "category_name": "math", "subcategory_name": trignometry}}
+    - "Get activities for algebra" → {{"activity_name": null, "category_name": null, "subcategory_name": "algebra"}}
+    - "Show all physics activities" → {{"activity_name": null, "category_name": "physics", "subcategory_name": null}}
+    """
+    result = await chat_completion({"prompt": extraction_prompt}, {}, json_mode=True)
+    return result.get("response", {})
+
+async def route_activity(state: dict, config: dict) -> dict:
+    logger.debug(f"=== ROUTE_ACTIVITY START ===")
+    op = state.get("operation")
+    logger.debug(f"route_activity op: {op}")
+
+    if op == "list-activities":
+        prompt = state.get("prompt", "")
+        filters = await extract_list_filters(prompt)
+        logger.debug(f"Extracted filters for list-activities: activity_name={filters.get('activity_name')}, category_name={filters.get('category_name')}, subcategory_name={filters.get('subcategory_name')}")
+        payload = {**state.get("details", {}), **filters}
+        result = await activity_crud({"operation": op, "payload": payload}, {})
+        return {"result": result.get("result")}
+    elif op == "unknown":
+        result = {"result": {"error": "Could not determine intent, please rephrase."}}
+        logger.debug(f"Unknown operation, returning error: {result}")
+        return result
+
+    result = await activity_crud({"operation": op, "payload": state.get("details", {})}, {})
+    return {"result": result.get("result")}
