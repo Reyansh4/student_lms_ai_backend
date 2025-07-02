@@ -12,12 +12,17 @@ from app.models.activity import Activity, DifficultyLevel, AccessType
 
 logger = get_logger(__name__)
 
-class CreateActivityInput(TypedDict):
+class CreateActivityInput(TypedDict, total=False):
     name: str
     description: str
     category_id: str  # UUID of the category
     sub_category_id: str  # UUID of the subcategory
     difficulty_level: str  # "Beginner"|"Intermediate"|"Advanced"
+    access_type: str
+    created_by: str
+    final_description: str
+    ai_guide: bool
+    status: str
 
 class CreateActivityOutput(TypedDict):
     id: str
