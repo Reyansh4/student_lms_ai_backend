@@ -435,6 +435,8 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
                         query = query.filter(Activity.sub_category_id == subcategory.id)
                         print(f"Filtering by subcategory: {subcategory.name} (ID: {subcategory.id})")
                         logger.debug(f"Filtering by subcategory: {subcategory.name} (ID: {subcategory.id})")
+                        if subcategory.description is None:
+                            subcategory.description = ""
                     else:
                         print(f"No subcategory found matching: {activity_payload['subcategory_name']}")
                         logger.debug(f"No subcategory found matching: {activity_payload['subcategory_name']}")
@@ -659,12 +661,27 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
     - category_name: The subject/category (e.g., math, science, physics, history)
     - subcategory_name: The specific topic/subcategory (e.g., algebra, calculus, refractive index)
     - difficulty_level: One of "Beginner", "Intermediate", or "Advanced"
-    
+    - final_description: A detailed summary of what needs to be done for this activity. The activity will be executed based on the final_description only.
+
     User request: "{prompt}"
-    
+
     Examples:
-    - "Create a math quiz about algebra for beginners" → {{"name": "Algebra Quiz", "description": "A quiz covering basic algebra concepts", "category_name": "math", "subcategory_name": "algebra", "difficulty_level": "Beginner"}}
-    - "Make a physics experiment on refractive index for advanced students" → {{"name": "Refractive Index Experiment", "description": "Advanced experiment to measure and analyze refractive index", "category_name": "physics", "subcategory_name": "refractive index", "difficulty_level": "Advanced"}}
+    - "Create a math quiz about algebra for beginners" → {{
+        "name": "Algebra Quiz",
+        "description": "A quiz covering basic algebra concepts",
+        "category_name": "math",
+        "subcategory_name": "algebra",
+        "difficulty_level": "Beginner",
+        "final_description": "Prepare a set of beginner-level algebra questions and compile them into a quiz format for students to solve."
+    }}
+    - "Make a physics experiment on refractive index for advanced students" → {{
+        "name": "Refractive Index Experiment",
+        "description": "Advanced experiment to measure and analyze refractive index",
+        "category_name": "physics",
+        "subcategory_name": "refractive index",
+        "difficulty_level": "Advanced",
+        "final_description": "Design and describe an advanced laboratory experiment where students measure the refractive index of various materials using lasers and prisms, analyze the results, and discuss the implications."
+    }}
     """
     
     logger.debug(f"Extraction prompt: {extraction_prompt}")
@@ -733,10 +750,11 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
         
         # If still no match, create new category
         if not category:
-            category = ActivityCategory(name=category_name)
+            category = ActivityCategory(name=category_name, description=f"Activity of {category_name}")
             db.add(category)
             db.flush()
             logger.info(f"Created new category: {category_name} with ID: {category.id}")
+            db.commit()
         
         # Find subcategory by name using fuzzy matching
         # First try exact match within the category
@@ -768,10 +786,15 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
         
         # If still no match, create new subcategory
         if not subcategory:
-            subcategory = ActivitySubCategory(name=subcategory_name, category_id=category.id)
+            subcategory = ActivitySubCategory(
+                name=subcategory_name,
+                category_id=category.id,
+                description=""
+            )
             db.add(subcategory)
             db.flush()
             logger.info(f"Created new subcategory: {subcategory_name} with ID: {subcategory.id}")
+            db.commit()
         
         # Prepare payload for create_activity tool
         logger.info(f"Extracted data: {extracted_data}")
@@ -782,8 +805,20 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
             "sub_category_id": str(subcategory.id),
             "difficulty_level": extracted_data.get("difficulty_level", "Beginner"),
             "created_by": user_id,
-            "access_type": "private"  # Always PRIVATE for agent-created activities
+            "access_type": "private"
         }
+        
+        # Add final_description if available
+        if "final_description" in extracted_data:
+            activity_payload["final_description"] = extracted_data["final_description"]
+
+        # Add ai_guide if available
+        if "ai_guide" in extracted_data:
+            activity_payload["ai_guide"] = extracted_data["ai_guide"]
+        
+        if not activity_payload.get("final_description"):
+            # Generate with AI or set a default
+            activity_payload["final_description"] = f"This activity covers {activity_payload['name']} in detail."
         
         logger.info(f"Activity payload: {activity_payload}")
         

@@ -76,7 +76,8 @@ def create_activity(payload: CreateActivityInput) -> CreateActivityOutput:
             sub_category_id=subcat.id,
             difficulty_level=DifficultyLevel(payload["difficulty_level"]),
             access_type=AccessType.PRIVATE,  # Always PRIVATE
-            created_by=user_id  # assuming you pass user_id here
+            created_by=user_id, # assuming you pass user_id here
+            final_description = payload.get("final_description")
         )
         db.add(activity)
         db.commit()
