@@ -163,24 +163,31 @@ async def classify_intent(state: dict, config: dict) -> dict:
     
     # First, check for spelling mistakes in the prompt
     spell_check_prompt = f"""
-    Check the following text for spelling mistakes and suggest corrections. 
+    Check the following text for actual spelling mistakes (not capitalization differences). 
     Focus on educational terms, subjects, and activity-related words.
+    
+    IMPORTANT: Do NOT flag capitalization differences as spelling errors. 
+    "Test" vs "test" or "Physics" vs "physics" are NOT spelling errors.
+    Only flag actual misspellings like "phisics" vs "physics" or "creat" vs "create".
     
     Text: "{prompt_text}"
     
     Return JSON with:
-    - has_spelling_errors: boolean
+    - has_spelling_errors: boolean (true only for actual misspellings, not capitalization)
     - corrected_text: string (original text if no errors)
     - suggestions: array of corrected words with their original misspellings
     
     Examples:
     - "creat a math quiz" → {{"has_spelling_errors": true, "corrected_text": "create a math quiz", "suggestions": [{{"original": "creat", "corrected": "create"}}]}}
     - "start a phisics experiment" → {{"has_spelling_errors": true, "corrected_text": "start a physics experiment", "suggestions": [{{"original": "phisics", "corrected": "physics"}}]}}
+    - "Test paper in Physics" → {{"has_spelling_errors": false, "corrected_text": "Test paper in Physics", "suggestions": []}}
     - "hello there" → {{"has_spelling_errors": false, "corrected_text": "hello there", "suggestions": []}}
     """
     
     try:
-        spell_check_result = await chat_completion({"prompt": spell_check_prompt}, {}, json_mode=True)
+        spell_check_result = await chat_completion(
+            {"prompt": spell_check_prompt}, {}, json_mode=True
+        )
         spell_check_data = spell_check_result.get("response", {})
         logger.debug(f"Spell check result: {spell_check_data}")
         
@@ -188,23 +195,23 @@ async def classify_intent(state: dict, config: dict) -> dict:
         corrected_text = spell_check_data.get("corrected_text", prompt_text)
         suggestions = spell_check_data.get("suggestions", [])
         
-        # If there are spelling errors, ask user to confirm
+        # If there are spelling errors, proceed with corrected text automatically
         if has_spelling_errors and suggestions:
-            suggestions_text = ", ".join([f"'{s['original']}' → '{s['corrected']}'" for s in suggestions])
-            spell_correction_message = f"🤔 I noticed some spelling in your request. Did you mean:\n\n**{suggestions_text}**\n\n**Original:** {prompt_text}\n**Corrected:** {corrected_text}\n\nPlease confirm if this is what you meant, or rephrase your request."
+            # Check if the corrections are just capitalization differences
+            only_capitalization_changes = all(
+                s['original'].lower() == s['corrected'].lower() 
+                for s in suggestions
+            )
             
-            # Return early with spell correction request
-            output = {
-                **state,
-                "intent": "spell-correction",
-                "confidence": 0.0,
-                "operation": "spell-correction",
-                "corrected_text": corrected_text,
-                "suggestions": suggestions,
-                "spell_correction_message": spell_correction_message
-            }
-            logger.debug(f"Spelling errors detected, returning correction request: {output}")
-            return output
+            if only_capitalization_changes:
+                # If only capitalization changed, proceed with corrected text without asking
+                logger.info(f"Only capitalization changes detected, proceeding with corrected text: {corrected_text}")
+            else:
+                # Real spelling errors detected, but proceed automatically with corrected text
+                suggestions_text = ", ".join([f"'{s['original']}' → '{s['corrected']}'" for s in suggestions])
+                logger.info(f"Spelling corrections applied automatically: {suggestions_text}")
+                logger.info(f"Proceeding with corrected text: {corrected_text}")
+                # Continue with the corrected text instead of asking user to confirm
             
     except Exception as e:
         logger.warning(f"Spell check failed: {e}, proceeding with original text")
@@ -243,7 +250,7 @@ async def classify_intent(state: dict, config: dict) -> dict:
         logger.debug(f"Fallback classification - text: {text}, intent: {intent}")
     
     intent = result.get("intent", "unknown").lower()
-    valid_intents = {"create-activity","edit-activity","delete-activity","list-activities","start-activity","generate-activity","greetings","capabilities"}
+    valid_intents = {"create-activity","edit-activity","delete-activity","list-activities","start-activity","generate-activity","greetings","capabilities","evaluate-performance"}
     if intent not in valid_intents:
         intent="unknown"
         logger.debug(f"Invalid intent '{intent}', setting to 'unknown'")
@@ -333,163 +340,21 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
     logger.debug(f"Full URL: {url}")
     logger.debug(f"Headers: {headers}")
     
-    # Use AI to intelligently extract activity details from the prompt
-    extraction_prompt = f"""
-    Extract activity information from this user request. Return JSON with these fields:
-    - activity_name: The specific activity name mentioned (e.g., quiz, test, etc)
-    - category_name: The subject/category mentioned (e.g., math, science, physics, history)
-    - subcategory_name: The specific topic/subcategory mentioned (e.g., algebra, calculus, refractive index)
-    
-    User request: "{prompt}"
-    
-    Examples:
-    - "start math quiz" → {{"activity_name": "quiz", "category_name": "math", "subcategory_name": null}}
-    - "begin algebra practice" → {{"activity_name": "practice", "category_name": "math", "subcategory_name": "algebra"}}
-    - "I want to do physics experiments" → {{"activity_name": "experiments", "category_name": "physics", "subcategory_name": "refractive index"}}
-    """
-    
-    logger.debug(f"Extraction prompt: {extraction_prompt}")
-    
-    try:
-        # Extract structured information from the prompt
-        extraction_result = await chat_completion({"prompt": extraction_prompt}, {}, json_mode=True)
-        extracted_data = extraction_result.get("response", {})
+    # First, check if activity ID is provided in the prompt
+    import re
+    # More flexible regex to match different formats: "activity id is:uuid", "activity_id:uuid", "id:uuid", "having id=uuid", etc.
+    logger.debug(f"Prompt: {prompt}")
+    activity_id_match = re.search(r'(?:activity\s+)?(?:id|ID)\s*(?:is\s*|having\s+)?[:=]?\s*([a-f0-9-]{8}-[a-f0-9-]{4}-[a-f0-9-]{4}-[a-f0-9-]{4}-[a-f0-9-]{12})', prompt, re.IGNORECASE)
+    logger.debug(f"Activity ID match: {activity_id_match}")
+    if activity_id_match:
+        activity_id = activity_id_match.group(1).strip()
+        logger.info(f"Found activity ID in prompt: {activity_id}")
         
-        logger.debug(f"Extraction result: {extraction_result}")
-        logger.debug(f"Extracted data: {extracted_data}")
-
         # Get user information from state
         details = state.get("details", {})
         user_id = details.get("user_id")
         if not user_id:
             user_id = state.get("user_id")
-        if not user_id:
-            # Fetch the first user from the database
-            from app.models.user import User
-            db_session = state.get("db")
-            if db_session:
-                first_user = db_session.query(User).order_by(User.created_at).first()
-                if first_user:
-                    user_id = (first_user.id)
-                else:
-                    raise ValueError("No users found in the database to use as created_by.")
-            else:
-                raise ValueError("Database session not available to fetch a user.")
-        
-        # Create the payload that the /start-activity endpoint expects
-        activity_payload = {
-            "activity_name": extracted_data.get("activity_name"),
-            "category_name": extracted_data.get("category_name"),
-            "subcategory_name": extracted_data.get("subcategory_name"),
-            "activity_id": None,
-            "created_by":  user_id
-        }
-        
-        print(f"Extracted data: {extracted_data}")
-        print(f"Activity payload: {activity_payload}")
-        logger.debug(f"Activity payload: {activity_payload}")
-        
-        # Try to find exact match in database first
-        if activity_payload["activity_name"]:
-            if not db:
-                print("Database session not available, will use HTTP endpoint for fuzzy matching")
-                logger.debug("Database session not available, will use HTTP endpoint for fuzzy matching")
-            else:
-                from app.models.activity import Activity
-                from app.models.activity_category import ActivityCategory
-                from app.models.activity_sub_category import ActivitySubCategory
-                from sqlalchemy.orm import joinedload
-                
-                print(f"=== DATABASE LOOKUP DEBUG ===")
-                logger.debug(f"=== DATABASE LOOKUP DEBUG ===")
-                print(f"Looking for: activity_name='{activity_payload['activity_name']}', category='{activity_payload['category_name']}', subcategory='{activity_payload['subcategory_name']}'")
-                logger.debug(f"Looking for: activity_name='{activity_payload['activity_name']}', category='{activity_payload['category_name']}', subcategory='{activity_payload['subcategory_name']}'")
-                
-                # Build query based on available extracted data
-                query = db.query(Activity).options(
-                    joinedload(Activity.category),
-                    joinedload(Activity.sub_category)
-                ).filter(Activity.is_active == True)
-                
-                # Add filters based on extracted data
-                if activity_payload["activity_name"]:
-                    query = query.filter(Activity.name.ilike(f"%{activity_payload['activity_name']}%"))
-                    print(f"Added activity name filter: '%{activity_payload['activity_name']}%'")
-                    logger.debug(f"Added activity name filter: '%{activity_payload['activity_name']}%'")
-                
-                # Handle category as foreign key - first find category ID by name
-                if activity_payload["category_name"]:
-                    category = db.query(ActivityCategory).filter(ActivityCategory.name.ilike(f"%{activity_payload['category_name']}%")).first()
-                    if category:
-                        query = query.filter(Activity.category_id == category.id)
-                        print(f"Filtering by category: {category.name} (ID: {category.id})")
-                        logger.debug(f"Filtering by category: {category.name} (ID: {category.id})")
-                    else:
-                        print(f"No category found matching: {activity_payload['category_name']}")
-                        logger.debug(f"No category found matching: {activity_payload['category_name']}")
-                
-                # Handle subcategory as foreign key - first find subcategory ID by name
-                if activity_payload["subcategory_name"]:
-                    subcategory = db.query(ActivitySubCategory).filter(ActivitySubCategory.name.ilike(f"%{activity_payload['subcategory_name']}%")).first()
-                    if subcategory:
-                        query = query.filter(Activity.sub_category_id == subcategory.id)
-                        print(f"Filtering by subcategory: {subcategory.name} (ID: {subcategory.id})")
-                        logger.debug(f"Filtering by subcategory: {subcategory.name} (ID: {subcategory.id})")
-                        if subcategory.description is None:
-                            subcategory.description = ""
-                    else:
-                        print(f"No subcategory found matching: {activity_payload['subcategory_name']}")
-                        logger.debug(f"No subcategory found matching: {activity_payload['subcategory_name']}")
-                
-                # Get all matches
-                matches = query.all()
-                print(f"Found {len(matches)} matches")
-                logger.debug(f"Found {len(matches)} matches")
-                
-                # Debug: Show all matches
-                for i, match in enumerate(matches):
-                    print(f"Match {i+1}: {match.name} (ID: {match.id}, Category: {match.category.name if match.category else 'None'}, SubCategory: {match.sub_category.name if match.sub_category else 'None'})")
-                    logger.debug(f"Match {i+1}: {match.name} (ID: {match.id}, Category: {match.category.name if match.category else 'None'}, SubCategory: {match.sub_category.name if match.sub_category else 'None'})")
-                
-                if len(matches) == 1:
-                    # Single exact match - use it directly
-                    exact_match = matches[0]
-                    print(f"Found single exact match: {exact_match.name} (ID: {exact_match.id})")
-                    logger.debug(f"Found single exact match: {exact_match.name} (ID: {exact_match.id})")
-                    activity_payload["activity_id"] = str(exact_match.id)  # Convert UUID to string
-                    # Clear other fields since we're using ID for direct lookup
-                    activity_payload["activity_name"] = None
-                    activity_payload["category_name"] = None
-                    activity_payload["subcategory_name"] = None
-                else:
-                    print("No exact match found, will use fuzzy matching")
-                    logger.debug("No exact match found, will use fuzzy matching")
-                    
-                # Debug: Show all activities in database
-                all_activities = db.query(Activity).filter(Activity.is_active == True).all()
-                print(f"Total active activities in database: {len(all_activities)}")
-                logger.debug(f"Total active activities in database: {len(all_activities)}")
-                for i, act in enumerate(all_activities[:5]):  # Show first 5
-                    print(f"Activity {i+1}: {act.name} (Category: {act.category.name if act.category else 'None'}, SubCategory: {act.sub_category.name if act.sub_category else 'None'})")
-                    logger.debug(f"Activity {i+1}: {act.name} (Category: {act.category.name if act.category else 'None'}, SubCategory: {act.sub_category.name if act.sub_category else 'None'})")
-                
-                print(f"=== END DATABASE LOOKUP DEBUG ===")
-                logger.debug(f"=== END DATABASE LOOKUP DEBUG ===")
-        
-    except Exception as e:
-        logger.warning(f"Failed to extract structured data: {e}")
-        logger.debug(f"Exception details: {e}")
-
-        # Get user information from state
-        details = state.get("details", {})
-        user_id = details.get("user_id")
-        if not user_id:
-            user_id = state.get("user_id")
-        
-        # Also check if user_id is directly in the state (from run_agent input)
-        if not user_id:
-            user_id = state.get("user_id")
-        
         if not user_id:
             # Fetch the first user from the database
             from app.models.user import User
@@ -502,16 +367,203 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
                     raise ValueError("No users found in the database to use as created_by.")
             else:
                 raise ValueError("Database session not available to fetch a user.")
-        # Fallback: use the entire prompt as activity name
+        
+        # Create payload with activity ID for direct lookup
         activity_payload = {
-            "activity_name": prompt,
+            "activity_id": activity_id,
+            "activity_name": None,
             "category_name": None,
             "subcategory_name": None,
-            "activity_id": None,
             "created_by": user_id
         }
-        logger.info(f"Using fallback payload: {activity_payload}")
-        logger.debug(f"Fallback activity payload: {activity_payload}")
+        
+        logger.info(f"Using activity ID for direct lookup: {activity_payload}")
+        logger.debug(f"Activity payload with ID: {activity_payload}")
+        
+        # Skip the extraction and fuzzy matching logic
+        goto_http_request = True
+    else:
+        # Use AI to intelligently extract activity details from the prompt
+        extraction_prompt = f"""
+        Extract activity information from this user request. Return JSON with these fields:
+        - activity_name: The specific activity name mentioned (e.g., quiz, test, etc)
+        - category_name: The subject/category mentioned (e.g., math, science, physics, history)
+        - subcategory_name: The specific topic/subcategory mentioned (e.g., algebra, calculus, refractive index)
+        
+        User request: "{prompt}"
+        
+        Examples:
+        - "start math quiz" → {{"activity_name": "quiz", "category_name": "math", "subcategory_name": null}}
+        - "begin algebra practice" → {{"activity_name": "practice", "category_name": "math", "subcategory_name": "algebra"}}
+        - "I want to do physics experiments" → {{"activity_name": "experiments", "category_name": "physics", "subcategory_name": "refractive index"}}
+        """
+        
+        logger.debug(f"Extraction prompt: {extraction_prompt}")
+        
+        try:
+            # Extract structured information from the prompt
+            extraction_result = await chat_completion({"prompt": extraction_prompt}, {}, json_mode=True)
+            extracted_data = extraction_result.get("response", {})
+            
+            logger.debug(f"Extraction result: {extraction_result}")
+            logger.debug(f"Extracted data: {extracted_data}")
+
+            # Get user information from state
+            details = state.get("details", {})
+            user_id = details.get("user_id")
+            if not user_id:
+                user_id = state.get("user_id")
+            if not user_id:
+                # Fetch the first user from the database
+                from app.models.user import User
+                db_session = state.get("db")
+                if db_session:
+                    first_user = db_session.query(User).order_by(User.created_at).first()
+                    if first_user:
+                        user_id = str(first_user.id)
+                    else:
+                        raise ValueError("No users found in the database to use as created_by.")
+                else:
+                    raise ValueError("Database session not available to fetch a user.")
+            
+            # Create the payload that the /start-activity endpoint expects
+            activity_payload = {
+                "activity_name": extracted_data.get("activity_name"),
+                "category_name": extracted_data.get("category_name"),
+                "subcategory_name": extracted_data.get("subcategory_name"),
+                "activity_id": None,
+                "created_by": user_id
+            }
+            
+            print(f"Extracted data: {extracted_data}")
+            print(f"Activity payload: {activity_payload}")
+            logger.debug(f"Activity payload: {activity_payload}")
+            
+            # Try to find exact match in database first
+            if activity_payload["activity_name"]:
+                if not db:
+                    print("Database session not available, will use HTTP endpoint for fuzzy matching")
+                    logger.debug("Database session not available, will use HTTP endpoint for fuzzy matching")
+                else:
+                    from app.models.activity import Activity
+                    from app.models.activity_category import ActivityCategory
+                    from app.models.activity_sub_category import ActivitySubCategory
+                    from sqlalchemy.orm import joinedload
+                    
+                    print(f"=== DATABASE LOOKUP DEBUG ===")
+                    logger.debug(f"=== DATABASE LOOKUP DEBUG ===")
+                    print(f"Looking for: activity_name='{activity_payload['activity_name']}', category='{activity_payload['category_name']}', subcategory='{activity_payload['subcategory_name']}'")
+                    logger.debug(f"Looking for: activity_name='{activity_payload['activity_name']}', category='{activity_payload['category_name']}', subcategory='{activity_payload['subcategory_name']}'")
+                    
+                    # Build query based on available extracted data
+                    query = db.query(Activity).options(
+                        joinedload(Activity.category),
+                        joinedload(Activity.sub_category)
+                    ).filter(Activity.is_active == True)
+                    
+                    # Add filters based on extracted data
+                    if activity_payload["activity_name"]:
+                        query = query.filter(Activity.name.ilike(f"%{activity_payload['activity_name']}%"))
+                        print(f"Added activity name filter: '%{activity_payload['activity_name']}%'")
+                        logger.debug(f"Added activity name filter: '%{activity_payload['activity_name']}%'")
+                    
+                    # Handle category as foreign key - first find category ID by name
+                    if activity_payload["category_name"]:
+                        category = db.query(ActivityCategory).filter(ActivityCategory.name.ilike(f"%{activity_payload['category_name']}%")).first()
+                        if category:
+                            query = query.filter(Activity.category_id == category.id)
+                            print(f"Filtering by category: {category.name} (ID: {category.id})")
+                            logger.debug(f"Filtering by category: {category.name} (ID: {category.id})")
+                        else:
+                            print(f"No category found matching: {activity_payload['category_name']}")
+                            logger.debug(f"No category found matching: {activity_payload['category_name']}")
+                    
+                    # Handle subcategory as foreign key - first find subcategory ID by name
+                    if activity_payload["subcategory_name"]:
+                        subcategory = db.query(ActivitySubCategory).filter(ActivitySubCategory.name.ilike(f"%{activity_payload['subcategory_name']}%")).first()
+                        if subcategory:
+                            query = query.filter(Activity.sub_category_id == subcategory.id)
+                            print(f"Filtering by subcategory: {subcategory.name} (ID: {subcategory.id})")
+                            logger.debug(f"Filtering by subcategory: {subcategory.name} (ID: {subcategory.id})")
+                            if subcategory.description is None:
+                                subcategory.description = ""
+                        else:
+                            print(f"No subcategory found matching: {activity_payload['subcategory_name']}")
+                            logger.debug(f"No subcategory found matching: {activity_payload['subcategory_name']}")
+                    
+                    # Get all matches
+                    matches = query.all()
+                    print(f"Found {len(matches)} matches")
+                    logger.debug(f"Found {len(matches)} matches")
+                    
+                    # Debug: Show all matches
+                    for i, match in enumerate(matches):
+                        print(f"Match {i+1}: {match.name} (ID: {match.id}, Category: {match.category.name if match.category else 'None'}, SubCategory: {match.sub_category.name if match.sub_category else 'None'})")
+                        logger.debug(f"Match {i+1}: {match.name} (ID: {match.id}, Category: {match.category.name if match.category else 'None'}, SubCategory: {match.sub_category.name if match.sub_category else 'None'})")
+                    
+                    if len(matches) == 1:
+                        # Single exact match - use it directly
+                        exact_match = matches[0]
+                        print(f"Found single exact match: {exact_match.name} (ID: {exact_match.id})")
+                        logger.debug(f"Found single exact match: {exact_match.name} (ID: {exact_match.id})")
+                        activity_payload["activity_id"] = str(exact_match.id)  # Convert UUID to string
+                        # Clear other fields since we're using ID for direct lookup
+                        activity_payload["activity_name"] = None
+                        activity_payload["category_name"] = None
+                        activity_payload["subcategory_name"] = None
+                    else:
+                        print("No exact match found, will use fuzzy matching")
+                        logger.debug("No exact match found, will use fuzzy matching")
+                        
+                    # Debug: Show all activities in database
+                    all_activities = db.query(Activity).filter(Activity.is_active == True).all()
+                    print(f"Total active activities in database: {len(all_activities)}")
+                    logger.debug(f"Total active activities in database: {len(all_activities)}")
+                    for i, act in enumerate(all_activities[:5]):  # Show first 5
+                        print(f"Activity {i+1}: {act.name} (Category: {act.category.name if act.category else 'None'}, SubCategory: {act.sub_category.name if act.sub_category else 'None'})")
+                        logger.debug(f"Activity {i+1}: {act.name} (Category: {act.category.name if act.category else 'None'}, SubCategory: {act.sub_category.name if act.sub_category else 'None'})")
+                    
+                    print(f"=== END DATABASE LOOKUP DEBUG ===")
+                    logger.debug(f"=== END DATABASE LOOKUP DEBUG ===")
+            
+        except Exception as e:
+            logger.warning(f"Failed to extract structured data: {e}")
+            logger.debug(f"Exception details: {e}")
+
+            # Get user information from state
+            details = state.get("details", {})
+            user_id = details.get("user_id")
+            if not user_id:
+                user_id = state.get("user_id")
+            
+            # Also check if user_id is directly in the state (from run_agent input)
+            if not user_id:
+                user_id = state.get("user_id")
+            
+            if not user_id:
+                # Fetch the first user from the database
+                from app.models.user import User
+                db_session = state.get("db")
+                if db_session:
+                    first_user = db_session.query(User).order_by(User.created_at).first()
+                    if first_user:
+                        user_id = str(first_user.id)
+                    else:
+                        raise ValueError("No users found in the database to use as created_by.")
+                else:
+                    raise ValueError("Database session not available to fetch a user.")
+            # Fallback: use the entire prompt as activity name
+            activity_payload = {
+                "activity_name": prompt,
+                "category_name": None,
+                "subcategory_name": None,
+                "activity_id": None,
+                "created_by": user_id
+            }
+            logger.info(f"Using fallback payload: {activity_payload}")
+            logger.debug(f"Fallback activity payload: {activity_payload}")
+        
+        goto_http_request = False
     
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -867,9 +919,6 @@ def route_from_classify_intent(state):
     elif intent == "capabilities":
         logger.debug("Routing to: describe_capabilities")
         return "describe_capabilities"
-    elif intent == "spell-correction":
-        logger.debug("Routing to: spell_correction_handler")
-        return "spell_correction_handler"
     elif intent == "start-activity":
         logger.debug("Routing to: start_activity_tool")
         return "start_activity_tool"
@@ -894,7 +943,7 @@ workflow.add_conditional_edges("classify_intent", route_from_classify_intent)
 
 # Finish points
 workflow.set_entry_point("classify_intent")
-for node in ["greet_user","describe_capabilities","spell_correction_handler","start_activity_tool","route_activity","generate_activity_handler","create_activity_handler","evaluate_performance_handler"]:
+for node in ["greet_user","describe_capabilities","start_activity_tool","route_activity","generate_activity_handler","create_activity_handler","evaluate_performance_handler"]:
     workflow.set_finish_point(node)
 
 # Compile agent
