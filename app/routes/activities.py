@@ -185,14 +185,28 @@ def list_activities(
 ):
     """List all activities with pagination"""
     logger.info(f"Listing activities for user: {current_user.email} (skip: {skip}, limit: {limit})")
+    logger.info(f"Filters - category_name: {category_name}, subcategory_name: {subcategory_name}, activity_name: {activity_name}")
+    
     try:
         query = db.query(Activity)
-        if category_name:
-            query = query.join(ActivityCategory).filter(ActivityCategory.name.ilike(f"%{category_name}%"))
-        if subcategory_name:
-            query = query.join(ActivitySubCategory).filter(ActivitySubCategory.name.ilike(f"%{subcategory_name}%"))
+        
+        # Handle category and subcategory filters with proper JOINs
+        if category_name or subcategory_name:
+            # Always join both tables when either filter is present
+            query = query.join(ActivityCategory).join(ActivitySubCategory)
+            
+            if category_name:
+                query = query.filter(ActivityCategory.name.ilike(f"%{category_name}%"))
+                logger.info(f"Applied category filter: {category_name}")
+            
+            if subcategory_name:
+                query = query.filter(ActivitySubCategory.name.ilike(f"%{subcategory_name}%"))
+                logger.info(f"Applied subcategory filter: {subcategory_name}")
+        
         if activity_name:
             query = query.filter(Activity.name.ilike(f"%{activity_name}%"))
+            logger.info(f"Applied activity name filter: {activity_name}")
+        
         total_length = query.count()
         activities = query.offset(skip).limit(limit).all()
         logger.info(f"Found {len(activities)} activities out of {total_length} total")

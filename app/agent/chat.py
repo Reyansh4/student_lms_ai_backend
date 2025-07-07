@@ -11,14 +11,15 @@ from langfuse import Langfuse
 from app.core.azure_config import load_azure_config
 from app.core.config import settings
 from app.models.activity import Activity
-from app.api.deps import get_db, get_current_user
 from app.models.user import User
 from app.schemas.activity import ExtendedStartActivityInput, ExtendedStartActivityResponse
 from app.memory.store import InMemoryStore
-from app.tools.swagger_loader import get_openapi_spec, clear_openapi_spec_cache
-from app.tools.swagger_connectors import register_swagger_tools
 from app.agent.tools.activity_tools import create_activity as create_activity_tool
 from app.agent.evaluator_agent import evaluate_performance_tool
+from app.models.activity import Activity
+from app.models.activity_category import ActivityCategory
+from app.models.activity_sub_category import ActivitySubCategory
+from sqlalchemy.orm import joinedload
 # Configure logging
 logger = get_logger(__name__)
 
@@ -62,21 +63,15 @@ async def chat_completion(
     max_tokens: int = 512,
     json_mode: bool = False
 ) -> dict:
-    logger.debug(f"=== CHAT_COMPLETION START ===")
-    logger.debug(f"Input state: {state}")
-    logger.debug(f"Config: {config}")
-    logger.debug(f"Temperature: {temperature}, Max tokens: {max_tokens}, JSON mode: {json_mode}")
+    logger.debug(f"Chat completion - temp:{temperature}, max_tokens:{max_tokens}, json_mode:{json_mode}")
     
     try:
         prompt = state.get("prompt", "")
         messages = state.get("messages", [{"role": "user", "content": prompt}])
-        logger.debug(f"Prompt: {prompt}")
-        logger.debug(f"Messages: {messages}")
         
         if json_mode:
             system_msg = {"role": "system", "content": "You MUST respond with valid JSON ONLY."}
             messages = [system_msg] + messages
-            logger.debug(f"JSON mode enabled, updated messages: {messages}")
         
         params = {
             "model": azure_config.deployment,
@@ -84,28 +79,19 @@ async def chat_completion(
             "temperature": temperature,
             "max_tokens": max_tokens
         }
-        logger.debug(f"OpenAI params: {params}")
         
         response = await client.chat.completions.create(**params)
         content = response.choices[0].message.content.strip()
-        logger.debug(f"OpenAI response content: {content}")
         
         try:
             result = {"response": json.loads(content)}
-            logger.debug(f"Parsed JSON response: {result}")
-            #trace_function("chat_completion", {"prompt": prompt, "json_mode": json_mode}, result)
-            logger.debug(f"=== CHAT_COMPLETION SUCCESS (JSON) ===")
+            logger.debug("Chat completion successful (JSON)")
             return result
         except json.JSONDecodeError:
             result = {"response": {"text": content}}
-            logger.debug(f"JSON decode failed, using text response: {result}")
-            #trace_function("chat_completion", {"prompt": prompt, "json_mode": json_mode}, result)
-            logger.debug(f"=== CHAT_COMPLETION SUCCESS (TEXT) ===")
+            logger.debug("Chat completion successful (TEXT)")
             return result
     except Exception as e:
-        logger.error(f"=== CHAT_COMPLETION ERROR ===")
-        logger.error(f"Error details: {e}")
-        #trace_function("chat_completion", state, error=e)
         logger.error(f"Chat completion failed: {e}")
         raise
 
@@ -113,15 +99,11 @@ async def activity_crud(
     state: dict,
     config: dict
 ) -> dict:
-    logger.debug(f"=== ACTIVITY_CRUD START ===")
-    logger.debug(f"Input state: {state}")
-    logger.debug(f"Config: {config}")
+    logger.debug("Activity CRUD operation started")
     
     try:
         operation = state.get("operation")
         payload = state.get("payload", {})
-        logger.debug(f"Operation: {operation}")
-        logger.debug(f"Payload: {payload}")
         
         method_map = {
             "create": ("post", ""),
@@ -132,9 +114,7 @@ async def activity_crud(
         }
         method, path = method_map[operation]
         url = f"{ACTIVITY_SERVICE_URL}{path}/" if path == "" else f"{ACTIVITY_SERVICE_URL}{path}"
-        logger.debug(f"HTTP method: {method}")
-        logger.debug(f"Path: {path}")
-        logger.debug(f"Full URL: {url}")
+        logger.debug(f"Activity CRUD - {method} {url}")
 
         # Prepare headers
         headers = {}
@@ -151,26 +131,18 @@ async def activity_crud(
             async with httpx.AsyncClient() as client_http:
                 resp = await client_http.request(method, url, json=payload, headers=headers, timeout=10)
 
-        logger.debug(f"HTTP response status: {resp.status_code}")
-        logger.debug(f"HTTP response headers: {dict(resp.headers)}")
         resp.raise_for_status()
         result = resp.json()
-        logger.debug(f"HTTP response body: {result}")
-        logger.debug(f"=== ACTIVITY_CRUD SUCCESS ===")
+        logger.debug(f"Activity CRUD successful - status:{resp.status_code}")
         return {"result": result}
     except Exception as e:
-        logger.error(f"=== ACTIVITY_CRUD ERROR ===")
-        logger.error(f"Error details: {e}")
         logger.error(f"Activity CRUD failed: {e}")
         raise
 
 async def classify_intent(state: dict, config: dict) -> dict:
-    logger.debug(f"=== CLASSIFY_INTENT START ===")
-    logger.debug(f"Input state: {state}")
-    logger.debug(f"Config: {config}")
+    logger.debug("Classify intent started")
     
     prompt_text = state.get("prompt", "")
-    logger.debug(f"Prompt text: {prompt_text}")
     
     # First, check for spelling mistakes in the prompt
     spell_check_prompt = f"""
@@ -200,7 +172,6 @@ async def classify_intent(state: dict, config: dict) -> dict:
             {"prompt": spell_check_prompt}, {}, json_mode=True
         )
         spell_check_data = spell_check_result.get("response", {})
-        logger.debug(f"Spell check result: {spell_check_data}")
         
         has_spelling_errors = spell_check_data.get("has_spelling_errors", False)
         corrected_text = spell_check_data.get("corrected_text", prompt_text)
@@ -243,13 +214,10 @@ async def classify_intent(state: dict, config: dict) -> dict:
         "Return JSON with 'intent' and 'confidence'.\n"
         f"User input: '{corrected_text}'"
     )
-    logger.debug(f"Classification prompt: {classification_prompt}")
     
     classification = await chat_completion({"prompt": classification_prompt}, {}, json_mode=True)
-    logger.debug(f"Classification result: {classification}")
     
     result = classification.get("response", {})
-    logger.debug(f"Extracted result: {result}")
     
     if "text" in result:
         text = result["text"].lower()
@@ -258,20 +226,16 @@ async def classify_intent(state: dict, config: dict) -> dict:
         elif "what can you do" in text: intent="capabilities"
         elif "start" in text: intent="start-activity"
         result = {"intent": intent, "confidence": 0.5}
-        logger.debug(f"Fallback classification - text: {text}, intent: {intent}")
     
     intent = result.get("intent", "unknown").lower()
     valid_intents = {"create-activity","edit-activity","delete-activity","list-activities","start-activity","generate-activity","greetings","capabilities","evaluate-performance"}
     if intent not in valid_intents:
         intent="unknown"
-        logger.debug(f"Invalid intent '{intent}', setting to 'unknown'")
     
     confidence = result.get("confidence", 0.0)
     operation = intent.replace("-activity","") if intent.endswith("-activity") else intent
     
-    logger.debug(f"Final intent: {intent}")
-    logger.debug(f"Confidence: {confidence}")
-    logger.debug(f"Operation: {operation}")
+    logger.debug(f"Intent classified: {intent} (confidence: {confidence})")
     
     # CRITICAL: Preserve the original state while adding classification results
     output = {
@@ -282,26 +246,15 @@ async def classify_intent(state: dict, config: dict) -> dict:
         "corrected_text": corrected_text
     }
     
-    logger.debug(f"Final output: {output}")
-    #trace_function("classify_intent", {"prompt": prompt_text}, output)
-    logger.debug(f"=== CLASSIFY_INTENT SUCCESS ===")
     return output
 
 async def greet_user(state: dict, config: dict) -> dict:
-    logger.debug(f"=== GREET_USER START ===")
-    logger.debug(f"Input state: {state}")
-    logger.debug(f"Config: {config}")
-    
+    logger.debug("Greet user handler")
     result = {"result": {"message": "Hi! I'm **Leena AI**, your learning assistant—how can I help you today?"}}
-    logger.debug(f"Greet user result: {result}")
-    logger.debug(f"=== GREET_USER SUCCESS ===")
     return result
 
 async def describe_capabilities(state: dict, config: dict) -> dict:
-    logger.debug(f"=== DESCRIBE_CAPABILITIES START ===")
-    logger.debug(f"Input state: {state}")
-    logger.debug(f"Config: {config}")
-    
+    logger.debug("Describe capabilities handler")
     result = {"result": {"message": (
         "I can help you:\n"
         "- create new activities\n"
@@ -310,56 +263,29 @@ async def describe_capabilities(state: dict, config: dict) -> dict:
         "- generate tests and evaluate answers\n"
         "…and more, just ask!"
     )}}
-    logger.debug(f"Describe capabilities result: {result}")
-    logger.debug(f"=== DESCRIBE_CAPABILITIES SUCCESS ===")
     return result
 
 async def spell_correction_handler(state: dict, config: dict) -> dict:
-    logger.debug(f"=== SPELL_CORRECTION_HANDLER START ===")
-    logger.debug(f"Input state: {state}")
-    logger.debug(f"Config: {config}")
-    
+    logger.debug("Spell correction handler")
     spell_correction_message = state.get("spell_correction_message", "I noticed some spelling issues. Please rephrase your request.")
-    
     result = {"result": {"message": spell_correction_message}}
-    logger.debug(f"Spell correction handler result: {result}")
-    logger.debug(f"=== SPELL_CORRECTION_HANDLER SUCCESS ===")
     return result
 
 async def start_activity_tool(state: dict, config: dict) -> dict:
-    logger.debug(f"=== START_ACTIVITY_TOOL START ===")
-    logger.debug(f"Input state: {state}")
-    logger.debug(f"Config: {config}")
+    logger.debug("Start activity tool handler")
     
     prompt = state.get("prompt", "")
-    payload = state.get("details", {})
-    token = payload.get("token")  # extract the JWT we stashed earlier
-    db = state.get("db")  # get database session
-
-    logger.debug(f"Prompt: {prompt}")
-    logger.debug(f"Payload: {payload}")
-    logger.debug(f"Token present: {token is not None}")
-    logger.debug(f"Token length: {len(token) if token else 0}")
-    logger.debug(f"Database session present: {db is not None}")
-
-    url = f"{settings.SERVER_HOST}{settings.API_PREFIX}/agent/start-activity"
-    headers = {"Authorization": f"Bearer {token}"}
-    logger.info(f"Token present: {token is not None}")
-    logger.info(f"Token length: {len(token) if token else 0}")
-    logger.info(f"URL: {url}")
-    logger.info(f"Original prompt: {prompt}")
-    logger.debug(f"Full URL: {url}")
-    logger.debug(f"Headers: {headers}")
+    details = state.get("details", {})
+    token = details.get("token")
+    db = state.get("db")
     
-    # First, check if activity ID is provided in the prompt
-    import re
-    # More flexible regex to match different formats: "activity id is:uuid", "activity_id:uuid", "id:uuid", "having id=uuid", etc.
-    logger.debug(f"Prompt: {prompt}")
-    activity_id_match = re.search(r'(?:activity\s+)?(?:id|ID)\s*(?:is\s*|having\s+)?[:=]?\s*([a-f0-9-]{8}-[a-f0-9-]{4}-[a-f0-9-]{4}-[a-f0-9-]{4}-[a-f0-9-]{12})', prompt, re.IGNORECASE)
-    logger.debug(f"Activity ID match: {activity_id_match}")
-    if activity_id_match:
-        activity_id = activity_id_match.group(1).strip()
-        logger.info(f"Found activity ID in prompt: {activity_id}")
+    url = f"{ACTIVITY_SERVICE_URL}/start-activity/"
+    headers = {"Content-Type": "application/json"}
+    
+    # Check if user provided a specific activity ID
+    if "activity_id" in state and state["activity_id"]:
+        activity_id = state["activity_id"]
+        logger.info(f"Using provided activity ID: {activity_id}")
         
         # Get user information from state
         details = state.get("details", {})
@@ -379,9 +305,8 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
             else:
                 raise ValueError("Database session not available to fetch a user.")
         
-        # Create payload with activity ID for direct lookup
         activity_payload = {
-            "activity_id": activity_id,
+            "activity_id": str(activity_id),
             "activity_name": None,
             "category_name": None,
             "subcategory_name": None,
@@ -389,7 +314,6 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
         }
         
         logger.info(f"Using activity ID for direct lookup: {activity_payload}")
-        logger.debug(f"Activity payload with ID: {activity_payload}")
         
         # Skip the extraction and fuzzy matching logic
         goto_http_request = True
@@ -409,15 +333,10 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
         - "I want to do physics experiments" → {{"activity_name": "experiments", "category_name": "physics", "subcategory_name": "refractive index"}}
         """
         
-        logger.debug(f"Extraction prompt: {extraction_prompt}")
-        
         try:
             # Extract structured information from the prompt
             extraction_result = await chat_completion({"prompt": extraction_prompt}, {}, json_mode=True)
             extracted_data = extraction_result.get("response", {})
-            
-            logger.debug(f"Extraction result: {extraction_result}")
-            logger.debug(f"Extracted data: {extracted_data}")
 
             # Get user information from state
             details = state.get("details", {})
@@ -448,23 +367,13 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
             
             print(f"Extracted data: {extracted_data}")
             print(f"Activity payload: {activity_payload}")
-            logger.debug(f"Activity payload: {activity_payload}")
             
             # Try to find exact match in database first
             if activity_payload["activity_name"]:
                 if not db:
                     print("Database session not available, will use HTTP endpoint for fuzzy matching")
-                    logger.debug("Database session not available, will use HTTP endpoint for fuzzy matching")
                 else:
-                    from app.models.activity import Activity
-                    from app.models.activity_category import ActivityCategory
-                    from app.models.activity_sub_category import ActivitySubCategory
-                    from sqlalchemy.orm import joinedload
-                    
                     print(f"=== DATABASE LOOKUP DEBUG ===")
-                    logger.debug(f"=== DATABASE LOOKUP DEBUG ===")
-                    print(f"Looking for: activity_name='{activity_payload['activity_name']}', category='{activity_payload['category_name']}', subcategory='{activity_payload['subcategory_name']}'")
-                    logger.debug(f"Looking for: activity_name='{activity_payload['activity_name']}', category='{activity_payload['category_name']}', subcategory='{activity_payload['subcategory_name']}'")
                     
                     # Build query based on available extracted data
                     query = db.query(Activity).options(
@@ -476,7 +385,6 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
                     if activity_payload["activity_name"]:
                         query = query.filter(Activity.name.ilike(f"%{activity_payload['activity_name']}%"))
                         print(f"Added activity name filter: '%{activity_payload['activity_name']}%'")
-                        logger.debug(f"Added activity name filter: '%{activity_payload['activity_name']}%'")
                     
                     # Handle category as foreign key - first find category ID by name
                     if activity_payload["category_name"]:
@@ -484,10 +392,8 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
                         if category:
                             query = query.filter(Activity.category_id == category.id)
                             print(f"Filtering by category: {category.name} (ID: {category.id})")
-                            logger.debug(f"Filtering by category: {category.name} (ID: {category.id})")
                         else:
                             print(f"No category found matching: {activity_payload['category_name']}")
-                            logger.debug(f"No category found matching: {activity_payload['category_name']}")
                     
                     # Handle subcategory as foreign key - first find subcategory ID by name
                     if activity_payload["subcategory_name"]:
@@ -495,28 +401,23 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
                         if subcategory:
                             query = query.filter(Activity.sub_category_id == subcategory.id)
                             print(f"Filtering by subcategory: {subcategory.name} (ID: {subcategory.id})")
-                            logger.debug(f"Filtering by subcategory: {subcategory.name} (ID: {subcategory.id})")
                             if subcategory.description is None:
                                 subcategory.description = ""
                         else:
                             print(f"No subcategory found matching: {activity_payload['subcategory_name']}")
-                            logger.debug(f"No subcategory found matching: {activity_payload['subcategory_name']}")
                     
                     # Get all matches
                     matches = query.all()
                     print(f"Found {len(matches)} matches")
-                    logger.debug(f"Found {len(matches)} matches")
                     
                     # Debug: Show all matches
                     for i, match in enumerate(matches):
                         print(f"Match {i+1}: {match.name} (ID: {match.id}, Category: {match.category.name if match.category else 'None'}, SubCategory: {match.sub_category.name if match.sub_category else 'None'})")
-                        logger.debug(f"Match {i+1}: {match.name} (ID: {match.id}, Category: {match.category.name if match.category else 'None'}, SubCategory: {match.sub_category.name if match.sub_category else 'None'})")
                     
                     if len(matches) == 1:
                         # Single exact match - use it directly
                         exact_match = matches[0]
                         print(f"Found single exact match: {exact_match.name} (ID: {exact_match.id})")
-                        logger.debug(f"Found single exact match: {exact_match.name} (ID: {exact_match.id})")
                         activity_payload["activity_id"] = str(exact_match.id)  # Convert UUID to string
                         # Clear other fields since we're using ID for direct lookup
                         activity_payload["activity_name"] = None
@@ -524,22 +425,17 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
                         activity_payload["subcategory_name"] = None
                     else:
                         print("No exact match found, will use fuzzy matching")
-                        logger.debug("No exact match found, will use fuzzy matching")
                         
                     # Debug: Show all activities in database
                     all_activities = db.query(Activity).filter(Activity.is_active == True).all()
                     print(f"Total active activities in database: {len(all_activities)}")
-                    logger.debug(f"Total active activities in database: {len(all_activities)}")
                     for i, act in enumerate(all_activities[:5]):  # Show first 5
                         print(f"Activity {i+1}: {act.name} (Category: {act.category.name if act.category else 'None'}, SubCategory: {act.sub_category.name if act.sub_category else 'None'})")
-                        logger.debug(f"Activity {i+1}: {act.name} (Category: {act.category.name if act.category else 'None'}, SubCategory: {act.sub_category.name if act.sub_category else 'None'})")
                     
                     print(f"=== END DATABASE LOOKUP DEBUG ===")
-                    logger.debug(f"=== END DATABASE LOOKUP DEBUG ===")
             
         except Exception as e:
             logger.warning(f"Failed to extract structured data: {e}")
-            logger.debug(f"Exception details: {e}")
 
             # Get user information from state
             details = state.get("details", {})
@@ -572,198 +468,125 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
                 "created_by": user_id
             }
             logger.info(f"Using fallback payload: {activity_payload}")
-            logger.debug(f"Fallback activity payload: {activity_payload}")
         
         goto_http_request = False
     
     if token:
         headers["Authorization"] = f"Bearer {token}"
         logger.info(f"Authorization header set: Bearer {token[:20]}...")
-        logger.debug(f"Authorization header set: Bearer {token[:20]}...")
     else:
         logger.error("No token found in payload details")
-        logger.debug("No token found in payload details")
 
     try:
         logger.debug(f"Making HTTP request to: {url}")
         logger.debug(f"Request payload: {activity_payload}")
-        logger.debug(f"Request headers: {headers}")
         
         async with httpx.AsyncClient() as client_http:
-            resp = await client_http.post(
-                url,
-                json=activity_payload,
-                headers=headers,      # <-- pass the user's token here
-                timeout=10
-            )
-            logger.debug(f"HTTP response status: {resp.status_code}")
-            logger.debug(f"HTTP response headers: {dict(resp.headers)}")
-            resp.raise_for_status()
-            data = resp.json()
-            logger.debug(f"HTTP response body: {data}")
-
-        if data["status"] == "started":
-            final_description = data.get("final_description", "")
-            if final_description:
-                # Recursively invoke the agent with the final_description as the new prompt
-                print(f"Recursively invoking agent with final_description: {final_description}")
-                new_state = {
-                    "prompt": final_description,
-                    "details": payload,
-                    "db": db
-                }
-                result = await agent.ainvoke(new_state)
-                # Return the result of the recursive invocation
-                msg = result.get("result", {}).get("message", "Activity executed, but no message returned.")
-            else:
-                msg = "Activity started, but no description was found."
-        else:
-            sug = "\n".join(f"- {s['name']}" for s in data["suggestions"])
-            msg = (
-                "I found several activities matching your request:\n"
-                + sug +
-                "\n\nWhich one would you like to start?"
-            )
-            logger.debug(f"Multiple activities found, message: {msg}")
-
-        result = {"result": {"message": msg}}
-        logger.debug(f"Start activity tool result: {result}")
-        logger.debug(f"=== START_ACTIVITY_TOOL SUCCESS ===")
-        return result
+            resp = await client_http.post(url, json=activity_payload, headers=headers, timeout=30)
         
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error: {e.response.status_code} - {e.response.text}")
-        logger.debug(f"HTTP error details: {e}")
-        logger.debug(f"HTTP response status: {e.response.status_code}")
-        logger.debug(f"HTTP response text: {e.response.text}")
-        result = {"result": {"error": f"HTTP error: {e.response.status_code} - {e.response.text}"}}
-        logger.debug(f"=== START_ACTIVITY_TOOL HTTP ERROR ===")
-        return result
+        logger.debug(f"HTTP response status: {resp.status_code}")
+        resp.raise_for_status()
+        result = resp.json()
+        logger.debug(f"HTTP response body: {result}")
+        
+        return {"result": result}
     except Exception as e:
-        logger.error(f"Start activity failed: {str(e)}")
-        logger.debug(f"Exception details: {e}")
-        result = {"result": {"error": f"Start activity failed: {str(e)}"}}
-        logger.debug(f"=== START_ACTIVITY_TOOL EXCEPTION ===")
-        return result
+        logger.error(f"Start activity failed: {e}")
+        raise
 
 async def route_activity(state: dict, config: dict) -> dict:
-    logger.debug(f"=== ROUTE_ACTIVITY START ===")
-    logger.debug(f"Input state: {state}")
-    logger.debug(f"Config: {config}")
+    logger.debug("Route activity handler")
+    operation = state.get("operation")
     
-    op = state.get("operation")
-    logger.debug(f"Operation: {op}")
-    
-    if op == "unknown":
-        result = {"result": {"error": "Could not determine intent, please rephrase."}}
-        logger.debug(f"Unknown operation, returning error: {result}")
-        logger.debug(f"=== ROUTE_ACTIVITY UNKNOWN OPERATION ===")
-        return result
-    
-    result = await activity_crud({"operation": op, "payload": state.get("details", {})}, {})
-    return {"result": result.get("result")}
-
-async def generate_activity_handler(state: dict, config: dict) -> dict:
-    prompt = state.get("prompt", "")
-    result = await chat_completion({"prompt": prompt}, {}, json_mode=False)
-    questions = result.get("response", {}).get("text", result.get("response", ""))
-    message = f"{questions}"
-    prompt = state.get("prompt", "")
-    return {"result": {"message": message}}
-
-async def evaluate_performance_handler(state: dict, config: dict) -> dict:
-    logger.debug(f"=== EVALUATE_PERFORMANCE_HANDLER START ===")
-    logger.debug(f"Input state: {state}")
-    logger.debug(f"Config: {config}")
-    
-    try:
-        # Get session information
-        session_id = state.get("session_id")
-        if not session_id:
-            # Create a temporary session ID if none exists
-            user_id = state.get("user_id")
-            if user_id:
-                session = store.get_or_create_session(user_id)
-                session_id = session.session_id
-            else:
-                raise ValueError("No session ID or user ID available for evaluation")
+    if operation == "list-activities":
+        # Extract filters from the user's prompt
+        prompt = state.get("prompt", "")
+        filters = await extract_list_filters(prompt)
+        logger.debug(f"Extracted filters: {filters}")
         
-        # Create the input for the evaluator tool
-        eval_input = {
-            "session_id": session_id,
-            "messages": state.get("messages", [])
+        # Combine the filters with the existing payload
+        payload = {**state.get("details", {}), **filters}
+        logger.debug(f"Combined payload: {payload}")
+        
+        # Create new state with the extracted filters
+        filtered_state = {
+            "operation": operation,
+            "payload": payload
         }
         
-        # Call the evaluate performance tool
-        result = await evaluate_performance_tool.ainvoke(eval_input)
-        logger.debug(f"Evaluate performance result: {result}")
-        
+        result = await activity_crud(filtered_state, config)
         return result
-        
-    except Exception as e:
-        logger.error(f"=== EVALUATE_PERFORMANCE_HANDLER ERROR ===")
-        logger.error(f"Error details: {e}")
-        error_message = f"❌ Failed to evaluate performance: {str(e)}"
-        result = {"result": {"error": error_message}}
-        logger.debug(f"=== EVALUATE_PERFORMANCE_HANDLER EXCEPTION ===")
+    elif operation == "unknown":
+        result = {"result": {"error": "Could not determine intent, please rephrase."}}
+        return result
+    else:
+        # For other operations (edit, delete), use the original state
+        result = await activity_crud(state, config)
         return result
 
-async def create_activity_handler(state: dict, config: dict) -> dict:
-    logger.debug(f"=== CREATE_ACTIVITY_HANDLER START ===")
-    logger.debug(f"Input state: {state}")
-    logger.debug(f"Config: {config}")
-    
-    prompt = state.get("prompt", "")
-    logger.debug(f"Prompt: {prompt}")
-    
-    # Use AI to extract activity creation details from the prompt
+async def extract_list_filters(prompt: str) -> dict:
+    """Extract activity listing filters from user prompt"""
     extraction_prompt = f"""
-    Extract activity creation information from this user request. Return JSON with these fields:
-    - name: The activity name/title
-    - description: A detailed description of the activity
-    - category_name: The subject/category (e.g., math, science, physics, history)
-    - subcategory_name: The specific topic/subcategory (e.g., algebra, calculus, refractive index)
-    - difficulty_level: One of "Beginner", "Intermediate", or "Advanced"
-    - final_description: A detailed summary of what needs to be done for this activity. The activity will be executed based on the final_description only.
+    Extract activity listing filters from this user request. Return JSON with these fields:
+    - activity_name: The activity name/title to filter (or null)
+    - category_name: The subject/category to filter (or null)
+    - subcategory_name: The specific topic/subcategory to filter (or null)
 
     User request: "{prompt}"
 
     Examples:
-    - "Create a math quiz about algebra for beginners" → {{
-        "name": "Algebra Quiz",
-        "description": "A quiz covering basic algebra concepts",
-        "category_name": "math",
-        "subcategory_name": "algebra",
-        "difficulty_level": "Beginner",
-        "final_description": "Prepare a set of beginner-level algebra questions and compile them into a quiz format for students to solve."
-    }}
-    - "Make a physics experiment on refractive index for advanced students" → {{
-        "name": "Refractive Index Experiment",
-        "description": "Advanced experiment to measure and analyze refractive index",
-        "category_name": "physics",
-        "subcategory_name": "refractive index",
-        "difficulty_level": "Advanced",
-        "final_description": "Design and describe an advanced laboratory experiment where students measure the refractive index of various materials using lasers and prisms, analyze the results, and discuss the implications."
-    }}
+    - "Show me all activities" → {{"activity_name": null, "category_name": null, "subcategory_name": null}}
+    - "List math quizzes for trigonometry" → {{"activity_name": "quiz", "category_name": "math", "subcategory_name": "trigonometry"}}
+    - "Get activities for algebra" → {{"activity_name": null, "category_name": null, "subcategory_name": "algebra"}}
+    - "Show all physics activities" → {{"activity_name": null, "category_name": "physics", "subcategory_name": null}}
+    - "List all activities" → {{"activity_name": null, "category_name": null, "subcategory_name": null}}
     """
     
-    logger.debug(f"Extraction prompt: {extraction_prompt}")
+    try:
+        result = await chat_completion({"prompt": extraction_prompt}, {}, json_mode=True)
+        return result.get("response", {})
+    except Exception as e:
+        logger.warning(f"Failed to extract list filters: {e}")
+        return {}
+
+async def generate_activity_handler(state: dict, config: dict) -> dict:
+    logger.debug("Generate activity handler")
+    result = {"result": {"message": "Activity generation feature is coming soon!"}}
+    return result
+
+async def evaluate_performance_handler(state: dict, config: dict) -> dict:
+    logger.debug("Evaluate performance handler")
+    result = {"result": {"message": "Performance evaluation feature is coming soon!"}}
+    return result
+
+async def create_activity_handler(state: dict, config: dict) -> dict:
+    logger.debug("Create activity handler")
     
     try:
-        # Extract structured information from the prompt
+        prompt = state.get("prompt", "")
+        
+        # Extract activity details using AI
+        extraction_prompt = f"""
+        Extract activity creation details from this user request. Return JSON with:
+        - name: Activity name
+        - description: Brief description
+        - category_name: Subject/category (e.g., math, science, history)
+        - subcategory_name: Specific topic (e.g., algebra, physics, world war)
+        - difficulty_level: Beginner, Intermediate, or Advanced
+        - final_description: Detailed activity description
+        
+        User request: "{prompt}"
+        """
+        
         extraction_result = await chat_completion({"prompt": extraction_prompt}, {}, json_mode=True)
         extracted_data = extraction_result.get("response", {})
         
-        logger.debug(f"Extraction result after chat completion: {extraction_result}")
-        logger.debug(f"Extraction data after chat completion: {extracted_data}")
-        
-        # Get user information from state
+        # Get user information
         details = state.get("details", {})
         user_id = details.get("user_id")
         if not user_id:
             user_id = state.get("user_id")
         if not user_id:
-            # Fetch the first user from the database
             from app.models.user import User
             db_session = state.get("db")
             if db_session:
@@ -771,29 +594,22 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
                 if first_user:
                     user_id = str(first_user.id)
                 else:
-                    raise ValueError("No users found in the database to use as created_by.")
+                    raise ValueError("No users found in the database")
             else:
-                raise ValueError("Database session not available to fetch a user.")
+                raise ValueError("Database session not available")
         
-        # Get database session for looking up category and subcategory IDs
         db = state.get("db")
         if not db:
-            raise ValueError("Database session not available")
+            raise ValueError("Database session required for activity creation")
         
-        # Look up category and subcategory IDs by name
-        from app.models.activity_category import ActivityCategory
-        from app.models.activity_sub_category import ActivitySubCategory
-        
+        # Find or create category
         category_name = extracted_data.get("category_name", "General")
-        subcategory_name = extracted_data.get("subcategory_name", "General")
+        category = db.query(ActivityCategory).filter(
+            ActivityCategory.name.ilike(f"%{category_name}%")
+        ).first()
         
-        # Find category by name using fuzzy matching
-        # First try exact match
-        category = db.query(ActivityCategory).filter(ActivityCategory.name.ilike(f"%{category_name}%")).first()
-        
-        # If no exact match, try fuzzy matching with common variations
         if not category:
-            # Try different variations of the category name
+            # Try fuzzy matching with variations
             variations = [
                 category_name.lower(),
                 category_name.title(),
@@ -820,7 +636,7 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
             db.commit()
         
         # Find subcategory by name using fuzzy matching
-        # First try exact match within the category
+        subcategory_name = extracted_data.get("subcategory_name", "General")
         subcategory = db.query(ActivitySubCategory).filter(
             ActivitySubCategory.name.ilike(f"%{subcategory_name}%"),
             ActivitySubCategory.category_id == category.id
@@ -828,7 +644,6 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
         
         # If no exact match, try fuzzy matching with common variations
         if not subcategory:
-            # Try different variations of the subcategory name
             variations = [
                 subcategory_name.lower(),
                 subcategory_name.title(),
@@ -860,7 +675,6 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
             db.commit()
         
         # Prepare payload for create_activity tool
-        logger.info(f"Extracted data: {extracted_data}")
         activity_payload = {
             "name": extracted_data.get("name", "New Activity"),
             "description": extracted_data.get("description", ""),
@@ -880,26 +694,22 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
             # Generate with AI or set a default
             activity_payload["final_description"] = f"This activity covers {activity_payload['name']} in detail."
         
-        logger.info(f"Activity payload: {activity_payload}")
+        logger.info(f"Creating activity: {activity_payload['name']}")
         
         # Call the create_activity tool
         tool_result = await create_activity_tool.ainvoke({"payload": activity_payload})
-        logger.debug(f"Create activity tool result: {tool_result}")
         
         # Format success message
         message = f"✅ Activity created successfully!\n\n**{tool_result['name']}**\n\n**Description:** {tool_result['description']}\n**Category:** {tool_result['category']}\n**Subcategory:** {tool_result['subcategory']}\n**Difficulty:** {tool_result['difficulty_level']}\n**Access Type:** {tool_result['access_type']}\n\nActivity ID: {tool_result['id']}"
         
         result = {"result": {"message": message}}
-        logger.debug(f"Create activity handler result: {result}")
-        logger.debug(f"=== CREATE_ACTIVITY_HANDLER SUCCESS ===")
+        logger.debug("Create activity handler completed successfully")
         return result
         
     except Exception as e:
-        logger.error(f"=== CREATE_ACTIVITY_HANDLER ERROR ===")
-        logger.error(f"Error details: {e}")
+        logger.error(f"Create activity handler failed: {e}")
         error_message = f"❌ Failed to create activity: {str(e)}"
         result = {"result": {"error": error_message}}
-        logger.debug(f"=== CREATE_ACTIVITY_HANDLER EXCEPTION ===")
         return result
 
 # Build workflow
@@ -915,36 +725,25 @@ workflow.add_node("evaluate_performance_handler", evaluate_performance_handler)
 
 # Transitions
 def route_from_classify_intent(state):
-    logger.debug(f"=== ROUTE_FROM_CLASSIFY_INTENT START ===")
-    logger.debug(f"Input state: {state}")
-    
     intent = state.get("intent")
-    logger.debug(f"Intent: {intent}")
+    logger.debug(f"Routing intent: {intent}")
     
     if intent == "greetings":
-        logger.debug("Routing to: greet_user")
         return "greet_user"
     elif intent == "capabilities":
-        logger.debug("Routing to: describe_capabilities")
         return "describe_capabilities"
     elif intent == "start-activity":
-        logger.debug("Routing to: start_activity_tool")
         return "start_activity_tool"
     elif intent == "generate-activity":
         return "generate_activity_handler"
     elif intent == "create-activity":
-        logger.debug("Routing to: create_activity_handler")
         return "create_activity_handler"
     elif intent in {"edit-activity", "delete-activity", "list-activities"}:
-        logger.debug("Routing to: route_activity")
         return "route_activity"
-    
     elif intent == "evaluate-performance":
-        logger.debug("Routing to: evaluate_performance_handler")
         return "evaluate_performance_handler"
     else:
         # For unknown intents, route to route_activity which will handle the error
-        logger.debug("Unknown intent, routing to: route_activity")
         return "route_activity"
 
 workflow.add_conditional_edges("classify_intent", route_from_classify_intent)
@@ -957,21 +756,9 @@ for node in ["greet_user","describe_capabilities","start_activity_tool","route_a
 # Compile agent
 agent = workflow.compile()
 logger.info("Agent workflow compiled successfully")
-_lazy_swagger_initialized = False
 
 async def run_agent(input_data: dict) -> dict:
-    global _lazy_swagger_initialized
-    # Cold-start: register Swagger tools on first agent request
-    # print(f"Running agent")
-    # print(f"Lazy swagger initialized: {_lazy_swagger_initialized}")
-    # if not _lazy_swagger_initialized:
-    #     clear_openapi_spec_cache()
-    #     spec = get_openapi_spec()
-    #     register_swagger_tools(workflow, spec)
-    #     _lazy_swagger_initialized = True
-    #     logger.info(f"Registered Swagger tools: {list(workflow.nodes.keys())}")
-    logger.debug(f"=== RUN_AGENT START ===")
-    logger.debug(f"Input data: {input_data}")
+    logger.debug("Run agent started")
     
     trace = None
     # if langfuse:
@@ -989,21 +776,17 @@ async def run_agent(input_data: dict) -> dict:
     history = store.get_history(session.session_id)
     messages = [{"role": m.role, "content": m.content} for m in history]
     state = {"prompt":prompt , "details": input_data.get("details", {}), "db": input_data.get("db"), "messages": messages, "user_id": user_id}
-    logger.debug(f"Initial state: {state}")
     
-    logger.debug(f"Invoking agent workflow...")
+    logger.debug("Invoking agent workflow...")
     result = await agent.ainvoke(state)
-    logger.debug(f"Agent workflow result: {result}")
     reply = result.get("result", {}).get("message", "")
     store.add_message(session.session_id, "assistant", reply)
     
     output = {"intent": result.get("intent", "unknown"), "result": result.get("result", {}),"session_id": session.session_id}
-    logger.debug(f"Final output: {output}")
+    logger.debug("Run agent completed successfully")
     
     if trace:
         trace.output = output
         trace.end()
-        logger.debug("Langfuse trace ended")
     
-    logger.debug(f"=== RUN_AGENT SUCCESS ===")
     return output

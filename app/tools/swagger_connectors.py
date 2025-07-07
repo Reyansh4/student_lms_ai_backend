@@ -1,7 +1,7 @@
 import httpx
 from langgraph.graph import StateGraph
 
-BASE_URL = "http://localhost:8081"
+BASE_URL = "http://localhost:8000"
 
 def register_swagger_tools(workflow: StateGraph, spec: dict):
     """

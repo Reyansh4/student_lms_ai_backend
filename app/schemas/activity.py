@@ -80,6 +80,7 @@ class ActivityResponse(ActivityBase):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    final_description: Optional[str] = None
 
     # ← NEW nested fields
     category: CategoryResponse

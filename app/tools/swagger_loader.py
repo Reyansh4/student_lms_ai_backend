@@ -4,7 +4,7 @@ from functools import lru_cache
 from app.core.config import settings
 
 # URL to fetch your OpenAPI schema (configure in settings)
-OPENAPI_URL = "http://localhost:8081/api/v1/openapi.json"
+OPENAPI_URL = "http://localhost:8000/api/v1/openapi.json"
 
 _lock = threading.Lock()
 
