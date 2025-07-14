@@ -26,4 +26,7 @@ class User(Base):
     activity_sessions = relationship("ActivitySession", back_populates="user", foreign_keys="ActivitySession.user_id", cascade="all, delete-orphan")
     graded_sessions = relationship("ActivitySession", back_populates="grader", foreign_keys="ActivitySession.graded_by", cascade="all, delete-orphan")
     activity_ai_responses = relationship("ActivityAIResponse", back_populates="user", foreign_keys="ActivityAIResponse.user_id", cascade="all, delete-orphan")
+    # Document relationships - documents are uploaded by users but belong to activities
+    uploaded_documents = relationship("Document", back_populates="uploader", foreign_keys="Document.uploaded_by")
+    document_chat_sessions = relationship("DocumentChatSession", back_populates="user")
     
