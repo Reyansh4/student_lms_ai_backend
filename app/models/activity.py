@@ -43,4 +43,7 @@ class Activity(Base):
     creator = relationship("User", foreign_keys=[created_by])
     questions = relationship("ActivityQuestion", back_populates="activity")
     sessions = relationship("ActivitySession", back_populates="activity")
-    documents = relationship("ActivityDocument", back_populates="activity") 
+    documents = relationship("ActivityDocument", back_populates="activity")
+    # Add new document relationships for RAG system
+    rag_documents = relationship("Document", back_populates="activity")
+    document_chat_sessions = relationship("DocumentChatSession", back_populates="activity") 

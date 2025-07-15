@@ -1,5 +1,5 @@
-from typing import Any, List, Dict
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Body
+from typing import Any, List, Dict, Optional
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Body, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from uuid import UUID
 from pydantic import BaseModel
@@ -15,6 +15,15 @@ from app.models.activity_sub_category import ActivitySubCategory
 from app.models.activity_category import ActivityCategory
 from app.schemas.activity import CategoryResponse, SubCategoryResponse, CategoryCreate,SubCategoryCreate,ClarificationQuestionsResponse,ClarificationAnswersRequest,FinalDescriptionResponse
 from sqlalchemy.orm import joinedload
+from app.models.document import Document as DocumentModel, DocumentChatSession, DocumentChatMessage
+from app.schemas.document import (
+    DocumentResponse, DocumentCreate, DocumentUpdate, DocumentUploadResponse,
+    DocumentChatRequest, DocumentChatResponse, DocumentChatSessionResponse,
+    DocumentChatMessageResponse
+)
+from app.services.document_processor import DocumentProcessor
+from app.services.vector_store import VectorStoreService
+from app.services.rag_chat_service import RAGChatService
 
 
 
@@ -185,14 +194,28 @@ def list_activities(
 ):
     """List all activities with pagination"""
     logger.info(f"Listing activities for user: {current_user.email} (skip: {skip}, limit: {limit})")
+    logger.info(f"Filters - category_name: {category_name}, subcategory_name: {subcategory_name}, activity_name: {activity_name}")
+    
     try:
         query = db.query(Activity)
-        if category_name:
-            query = query.join(ActivityCategory).filter(ActivityCategory.name.ilike(f"%{category_name}%"))
-        if subcategory_name:
-            query = query.join(ActivitySubCategory).filter(ActivitySubCategory.name.ilike(f"%{subcategory_name}%"))
+        
+        # Handle category and subcategory filters with proper JOINs
+        if category_name or subcategory_name:
+            # Always join both tables when either filter is present
+            query = query.join(ActivityCategory).join(ActivitySubCategory)
+            
+            if category_name:
+                query = query.filter(ActivityCategory.name.ilike(f"%{category_name}%"))
+                logger.info(f"Applied category filter: {category_name}")
+            
+            if subcategory_name:
+                query = query.filter(ActivitySubCategory.name.ilike(f"%{subcategory_name}%"))
+                logger.info(f"Applied subcategory filter: {subcategory_name}")
+        
         if activity_name:
             query = query.filter(Activity.name.ilike(f"%{activity_name}%"))
+            logger.info(f"Applied activity name filter: {activity_name}")
+        
         total_length = query.count()
         activities = query.offset(skip).limit(limit).all()
         logger.info(f"Found {len(activities)} activities out of {total_length} total")
@@ -591,11 +614,475 @@ async def route_activity(state: dict, config: dict) -> dict:
         logger.debug(f"Extracted filters for list-activities: activity_name={filters.get('activity_name')}, category_name={filters.get('category_name')}, subcategory_name={filters.get('subcategory_name')}")
         payload = {**state.get("details", {}), **filters}
         result = await activity_crud({"operation": op, "payload": payload}, {})
-        return {"result": result.get("result")}
+        return result.get("result", {})
     elif op == "unknown":
-        result = {"result": {"error": "Could not determine intent, please rephrase."}}
+        result = {"error": "Could not determine intent, please rephrase."}
         logger.debug(f"Unknown operation, returning error: {result}")
         return result
 
     result = await activity_crud({"operation": op, "payload": state.get("details", {})}, {})
-    return {"result": result.get("result")}
+    return result.get("result", {})
+
+# ================================
+# Document APIs (RAG System)
+# ================================
+
+# Initialize document services
+document_processor = DocumentProcessor()
+vector_store_service = VectorStoreService()
+rag_chat_service = RAGChatService()
+
+@router.post("/{activity_id}/documents/upload", response_model=DocumentUploadResponse)
+async def upload_document_to_activity(
+    activity_id: UUID,
+    file: UploadFile = File(...),
+    description: Optional[str] = Form(None),
+    tags: Optional[str] = Form(None),  # JSON string of tags
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Upload and process a document for an activity"""
+    
+    try:
+        # Validate file type
+        allowed_types = ["application/pdf", "text/plain", "text/csv", "application/json"]
+        if file.content_type not in allowed_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File type {file.content_type} not supported. Allowed types: {allowed_types}"
+            )
+        
+        # Verify activity exists and user has access
+        activity = db.query(Activity).filter(Activity.id == activity_id).first()
+        if not activity:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Activity not found"
+            )
+        
+        # Check if user has permission to upload to this activity
+        if activity.created_by != current_user.id and activity.access_type.value != "global":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to upload documents to this activity"
+            )
+        
+        # Read file content
+        file_content = await file.read()
+        
+        # Process tags
+        tag_list = []
+        if tags:
+            try:
+                import json
+                tag_list = json.loads(tags)
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid tags JSON: {tags}")
+        
+        # Process document
+        document = await document_processor.process_uploaded_file(
+            file_content=file_content,
+            filename=file.filename,
+            mime_type=file.content_type,
+            activity_id=str(activity_id),
+            uploaded_by=str(current_user.id),
+            db=db
+        )
+        
+        # Update document with additional info
+        if description:
+            document.description = description
+        if tag_list:
+            document.tags = tag_list
+        
+        # Get document chunks
+        chunks = document_processor.get_document_chunks(document)
+        
+        # Add to vector store
+        if chunks:
+            success = await vector_store_service.add_document_to_vector_store(document, chunks)
+            if not success:
+                logger.warning(f"Failed to add document {document.id} to vector store")
+        
+        db.commit()
+        
+        return DocumentUploadResponse(
+            document_id=document.id,
+            activity_id=activity_id,
+            message="Document uploaded and processed successfully",
+            processing_status="completed" if document.is_processed else "failed"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading document: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error uploading document: {str(e)}"
+        )
+
+@router.get("/{activity_id}/documents", response_model=List[DocumentResponse])
+async def list_activity_documents(
+    activity_id: UUID,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """List documents for a specific activity"""
+    
+    try:
+        # Verify activity exists
+        activity = db.query(Activity).filter(Activity.id == activity_id).first()
+        if not activity:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Activity not found"
+            )
+        
+        # Check access permissions
+        if activity.created_by != current_user.id and activity.access_type.value != "global":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to access this activity"
+            )
+        
+        documents = db.query(DocumentModel).filter(
+            DocumentModel.activity_id == activity_id
+        ).offset(skip).limit(limit).all()
+        
+        return documents
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing activity documents: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error listing activity documents"
+        )
+
+@router.get("/{activity_id}/documents/{document_id}", response_model=DocumentResponse)
+async def get_activity_document(
+    activity_id: UUID,
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get a specific document from an activity"""
+    
+    try:
+        # Verify activity exists
+        activity = db.query(Activity).filter(Activity.id == activity_id).first()
+        if not activity:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Activity not found"
+            )
+        
+        # Check access permissions
+        if activity.created_by != current_user.id and activity.access_type.value != "global":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to access this activity"
+            )
+        
+        # Get document
+        document = db.query(DocumentModel).filter(
+            DocumentModel.id == document_id,
+            DocumentModel.activity_id == activity_id
+        ).first()
+        
+        if not document:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found"
+            )
+        
+        return document
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting document {document_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error getting document"
+        )
+
+@router.delete("/{activity_id}/documents/{document_id}")
+async def delete_activity_document(
+    activity_id: UUID,
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Delete a document from an activity"""
+    
+    try:
+        # Verify activity exists
+        activity = db.query(Activity).filter(Activity.id == activity_id).first()
+        if not activity:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Activity not found"
+            )
+        
+        # Get document
+        document = db.query(DocumentModel).filter(
+            DocumentModel.id == document_id,
+            DocumentModel.activity_id == activity_id
+        ).first()
+        
+        if not document:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found"
+            )
+        
+        # Check if user can delete (only uploader or activity creator)
+        if (document.uploaded_by != current_user.id and 
+            activity.created_by != current_user.id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to delete this document"
+            )
+        
+        # Delete from vector store
+        await vector_store_service.delete_document_from_vector_store(str(document.id))
+        
+        # Delete document
+        await document_processor.delete_document(document, db)
+        
+        return {"message": "Document deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting document {document_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error deleting document"
+        )
+
+@router.post("/{activity_id}/documents/chat", response_model=DocumentChatResponse)
+async def chat_with_activity_documents(
+    activity_id: UUID,
+    request: DocumentChatRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Chat with all documents in an activity using RAG"""
+    
+    try:
+        # Verify activity exists and user has access
+        activity = db.query(Activity).filter(Activity.id == activity_id).first()
+        if not activity:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Activity not found"
+            )
+        
+        if activity.created_by != current_user.id and activity.access_type.value != "global":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to access this activity"
+            )
+        
+        # Chat with activity documents
+        response = await rag_chat_service.chat_with_activity_documents(
+            message=request.message,
+            activity_id=activity_id,
+            user_id=current_user.id,
+            session_name=None,
+            db=db
+        )
+        
+        return DocumentChatResponse(
+            message=response["message"],
+            session_id=response["session_id"],
+            sources=response["sources"],
+            metadata=response["metadata"]
+        )
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error in activity document chat: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error in activity document chat"
+        )
+
+@router.post("/{activity_id}/documents/{document_id}/chat", response_model=DocumentChatResponse)
+async def chat_with_specific_document(
+    activity_id: UUID,
+    document_id: UUID,
+    request: DocumentChatRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Chat with a specific document in an activity using RAG"""
+    
+    try:
+        # Verify activity exists and user has access
+        activity = db.query(Activity).filter(Activity.id == activity_id).first()
+        if not activity:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Activity not found"
+            )
+        
+        if activity.created_by != current_user.id and activity.access_type.value != "global":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to access this activity"
+            )
+        
+        # Verify document exists and belongs to activity
+        document = db.query(DocumentModel).filter(
+            DocumentModel.id == document_id,
+            DocumentModel.activity_id == activity_id
+        ).first()
+        
+        if not document:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found"
+            )
+        
+        # Get or create session
+        session = await rag_chat_service.get_or_create_session(
+            session_id=request.session_id,
+            document_id=document_id,
+            activity_id=activity_id,
+            user_id=current_user.id,
+            session_name=None,
+            db=db
+        )
+        
+        # Chat with document
+        response = await rag_chat_service.chat_with_document(
+            message=request.message,
+            session_id=session.id,
+            db=db
+        )
+        
+        return DocumentChatResponse(
+            message=response["message"],
+            session_id=response["session_id"],
+            sources=response["sources"],
+            metadata=response["metadata"]
+        )
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error in document chat: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error in document chat"
+        )
+
+@router.get("/{activity_id}/documents/chat/sessions", response_model=List[DocumentChatSessionResponse])
+async def list_activity_chat_sessions(
+    activity_id: UUID,
+    document_id: Optional[UUID] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """List chat sessions for an activity"""
+    
+    try:
+        # Verify activity exists and user has access
+        activity = db.query(Activity).filter(Activity.id == activity_id).first()
+        if not activity:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Activity not found"
+            )
+        
+        if activity.created_by != current_user.id and activity.access_type.value != "global":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to access this activity"
+            )
+        
+        query = db.query(DocumentChatSession).filter(
+            DocumentChatSession.user_id == current_user.id,
+            DocumentChatSession.activity_id == activity_id
+        )
+        
+        if document_id:
+            query = query.filter(DocumentChatSession.document_id == document_id)
+        
+        sessions = query.order_by(DocumentChatSession.updated_at.desc()).all()
+        return sessions
+        
+    except Exception as e:
+        logger.error(f"Error listing chat sessions: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error listing chat sessions"
+        )
+
+@router.get("/{activity_id}/documents/stats")
+async def get_activity_document_stats(
+    activity_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get document statistics for a specific activity"""
+    
+    try:
+        # Verify activity exists and user has access
+        activity = db.query(Activity).filter(Activity.id == activity_id).first()
+        if not activity:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Activity not found"
+            )
+        
+        if activity.created_by != current_user.id and activity.access_type.value != "global":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to access this activity"
+            )
+        
+        # Get activity's document count
+        document_count = db.query(DocumentModel).filter(
+            DocumentModel.activity_id == activity_id
+        ).count()
+        
+        # Get processed document count
+        processed_count = db.query(DocumentModel).filter(
+            DocumentModel.activity_id == activity_id,
+            DocumentModel.is_processed == True
+        ).count()
+        
+        # Get vector store stats for this activity
+        activity_chunks = await vector_store_service.get_activity_chunks_from_vector_store(str(activity_id))
+        
+        return {
+            "activity_id": activity_id,
+            "total_documents": document_count,
+            "processed_documents": processed_count,
+            "total_chunks": len(activity_chunks),
+            "activity_name": activity.name
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting activity document stats: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error getting activity document stats"
+        )

@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.routes import auth, roles, activities,permissions
+from app.routes import auth, roles, activities, permissions, documents
 
 api_router = APIRouter()
 

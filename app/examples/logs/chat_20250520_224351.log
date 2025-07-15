@@ -1,8 +1,0 @@
-2025-05-20 22:43:51 - llama_chat - INFO - Initializing Chat
-2025-05-20 22:43:51 - llama_chat - INFO - Using model: meta-llama/Llama-2-7b-chat-hf
-2025-05-20 22:43:51 - llama_chat - INFO - Successfully initialized HuggingFace client
-2025-05-20 22:43:51 - llama_chat - INFO - Initialized conversation memory
-2025-05-20 22:43:53 - llama_chat - INFO - Received message: Hello
-2025-05-20 22:43:53 - llama_chat - ERROR - Error in chat: 
-2025-05-20 22:44:06 - llama_chat - INFO - Received message: Welcome to India
-2025-05-20 22:44:06 - llama_chat - ERROR - Error in chat: 
