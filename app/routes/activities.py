@@ -614,14 +614,14 @@ async def route_activity(state: dict, config: dict) -> dict:
         logger.debug(f"Extracted filters for list-activities: activity_name={filters.get('activity_name')}, category_name={filters.get('category_name')}, subcategory_name={filters.get('subcategory_name')}")
         payload = {**state.get("details", {}), **filters}
         result = await activity_crud({"operation": op, "payload": payload}, {})
-        return {"result": result.get("result")}
+        return result.get("result", {})
     elif op == "unknown":
-        result = {"result": {"error": "Could not determine intent, please rephrase."}}
+        result = {"error": "Could not determine intent, please rephrase."}
         logger.debug(f"Unknown operation, returning error: {result}")
         return result
 
     result = await activity_crud({"operation": op, "payload": state.get("details", {})}, {})
-    return {"result": result.get("result")}
+    return result.get("result", {})
 
 # ================================
 # Document APIs (RAG System)

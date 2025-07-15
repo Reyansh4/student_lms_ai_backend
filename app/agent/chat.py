@@ -250,25 +250,34 @@ async def classify_intent(state: dict, config: dict) -> dict:
 
 async def greet_user(state: dict, config: dict) -> dict:
     logger.debug("Greet user handler")
-    result = {"result": {"message": "Hi! I'm **Leena AI**, your learning assistant—how can I help you today?"}}
+    result = {
+        "message": "Hi! I'm **Leena AI**, your learning assistant—how can I help you today?",
+        "activity_id": ""
+    }
     return result
 
 async def describe_capabilities(state: dict, config: dict) -> dict:
     logger.debug("Describe capabilities handler")
-    result = {"result": {"message": (
-        "I can help you:\n"
-        "- create new activities\n"
-        "- start or match existing activities\n"
-        "- teach topics step-by-step\n"
-        "- generate tests and evaluate answers\n"
-        "…and more, just ask!"
-    )}}
+    result = {
+        "message": (
+            "I can help you:\n"
+            "- create new activities\n"
+            "- start or match existing activities\n"
+            "- teach topics step-by-step\n"
+            "- generate tests and evaluate answers\n"
+            "…and more, just ask!"
+        ),
+        "activity_id": ""
+    }
     return result
 
 async def spell_correction_handler(state: dict, config: dict) -> dict:
     logger.debug("Spell correction handler")
     spell_correction_message = state.get("spell_correction_message", "I noticed some spelling issues. Please rephrase your request.")
-    result = {"result": {"message": spell_correction_message}}
+    result = {
+        "message": spell_correction_message,
+        "activity_id": ""
+    }
     return result
 
 async def start_activity_tool(state: dict, config: dict) -> dict:
@@ -489,7 +498,19 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
         result = resp.json()
         logger.debug(f"HTTP response body: {result}")
         
-        return {"result": result}
+        # Extract activity_id if present in the result
+        activity_id = ""
+        if isinstance(result, dict):
+            if "activity_id" in result:
+                activity_id = result["activity_id"]
+            elif "suggestions" in result and result["suggestions"]:
+                # If there are suggestions, use the first one's activity_id
+                activity_id = result["suggestions"][0].get("activity_id", "")
+        
+        return {
+            **result,
+            "activity_id": activity_id
+        }
     except Exception as e:
         logger.error(f"Start activity failed: {e}")
         raise
@@ -515,14 +536,14 @@ async def route_activity(state: dict, config: dict) -> dict:
         }
         
         result = await activity_crud(filtered_state, config)
-        return result
+        return result.get("result", {})
     elif operation == "unknown":
-        result = {"result": {"error": "Could not determine intent, please rephrase."}}
+        result = {"error": "Could not determine intent, please rephrase."}
         return result
     else:
         # For other operations (edit, delete), use the original state
         result = await activity_crud(state, config)
-        return result
+        return result.get("result", {})
 
 async def extract_list_filters(prompt: str) -> dict:
     """Extract activity listing filters from user prompt"""
@@ -551,12 +572,18 @@ async def extract_list_filters(prompt: str) -> dict:
 
 async def generate_activity_handler(state: dict, config: dict) -> dict:
     logger.debug("Generate activity handler")
-    result = {"result": {"message": "Activity generation feature is coming soon!"}}
+    result = {
+        "message": "Activity generation feature is coming soon!",
+        "activity_id": ""
+    }
     return result
 
 async def evaluate_performance_handler(state: dict, config: dict) -> dict:
     logger.debug("Evaluate performance handler")
-    result = {"result": {"message": "Performance evaluation feature is coming soon!"}}
+    result = {
+        "message": "Performance evaluation feature is coming soon!",
+        "activity_id": ""
+    }
     return result
 
 async def create_activity_handler(state: dict, config: dict) -> dict:
@@ -702,14 +729,20 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
         # Format success message
         message = f"✅ Activity created successfully!\n\n**{tool_result['name']}**\n\n**Description:** {tool_result['description']}\n**Category:** {tool_result['category']}\n**Subcategory:** {tool_result['subcategory']}\n**Difficulty:** {tool_result['difficulty_level']}\n**Access Type:** {tool_result['access_type']}\n\nActivity ID: {tool_result['id']}"
         
-        result = {"result": {"message": message}}
+        result = {
+            "message": message,
+            "activity_id": tool_result.get('id', '')
+        }
         logger.debug("Create activity handler completed successfully")
         return result
         
     except Exception as e:
         logger.error(f"Create activity handler failed: {e}")
         error_message = f"❌ Failed to create activity: {str(e)}"
-        result = {"result": {"error": error_message}}
+        result = {
+            "error": error_message,
+            "activity_id": ""
+        }
         return result
 
 # Build workflow
@@ -779,10 +812,21 @@ async def run_agent(input_data: dict) -> dict:
     
     logger.debug("Invoking agent workflow...")
     result = await agent.ainvoke(state)
-    reply = result.get("result", {}).get("message", "")
+    
+    # Handle the new flattened response structure
+    # Handlers now return results directly, not wrapped in a "result" object
+    if "result" in result:
+        # Some handlers might still return the old format, handle both
+        reply = result.get("result", {}).get("message", "")
+        result_data = result.get("result", {})
+    else:
+        # New format: handlers return data directly
+        reply = result.get("message", "")
+        result_data = result
+    
     store.add_message(session.session_id, "assistant", reply)
     
-    output = {"intent": result.get("intent", "unknown"), "result": result.get("result", {}),"session_id": session.session_id}
+    output = {"intent": result.get("intent", "unknown"), "result": result_data, "session_id": session.session_id}
     logger.debug("Run agent completed successfully")
     
     if trace:
