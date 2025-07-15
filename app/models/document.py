@@ -65,7 +65,7 @@ class DocumentChatMessage(Base):
     role = Column(String(20), nullable=False)  # 'user' or 'assistant'
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=func.now())
-    metadata = Column(JSON)  # Store additional metadata like sources used
+    message_metadata = Column(JSON)  # Store additional metadata like sources used
 
     # Relationships
     session = relationship("DocumentChatSession", back_populates="messages") 

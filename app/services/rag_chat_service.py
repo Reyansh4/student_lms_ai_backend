@@ -207,7 +207,7 @@ class RAGChatService:
             session_id=session_id,
             role="assistant",
             content=response['answer'],
-            metadata={"sources": response.get('context', [])}
+            message_metadata={"sources": response.get('context', [])}
         )
         db.add(assistant_message)
         
