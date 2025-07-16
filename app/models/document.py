@@ -36,7 +36,7 @@ class Document(Base):
     processed_at = Column(DateTime)
 
     # Relationships
-    activity = relationship("Activity", back_populates="documents")
+    activity = relationship("Activity", back_populates="rag_documents")
     uploader = relationship("User", back_populates="uploaded_documents", foreign_keys=[uploaded_by])
     chat_sessions = relationship("DocumentChatSession", back_populates="document")
 
