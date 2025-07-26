@@ -16,6 +16,7 @@ from app.schemas.activity import ExtendedStartActivityInput, ExtendedStartActivi
 from app.memory.store import InMemoryStore
 from app.agent.tools.activity_tools import create_activity as create_activity_tool
 from app.agent.evaluator_agent import evaluate_performance_tool
+from app.agent.tools.evaluation_tools import evaluate_user_performance, get_evaluation_history, analyze_learning_progress
 from app.models.activity import Activity
 from app.models.activity_category import ActivityCategory
 from app.models.activity_sub_category import ActivitySubCategory
@@ -43,7 +44,7 @@ store = InMemoryStore()
 # logger.info("Langfuse tracing initialized")
 # Optional Langfuse tracing
 
-tools = [create_activity_tool, evaluate_performance_tool]
+tools = [create_activity_tool, evaluate_performance_tool, evaluate_user_performance, get_evaluation_history, analyze_learning_progress]
 # Note: We're not using bound_llm since AsyncAzureOpenAI doesn't support bind_tools
 # The create_activity_tool will be called directly in the create_activity_handler
 # def trace_function(func_name, input_data, output_data=None, error=None):
@@ -210,7 +211,7 @@ async def classify_intent(state: dict, config: dict) -> dict:
         "- generate-activity: User wants to generate any activity (quiz, lesson, assignment, etc.) based on a description (including markdown)\n"
         "- greetings: User is greeting the agent\n"
         "- capabilities: User asks what you can do\n"
-        "- evaluate-performance: User wants to evaluate the performance of an activity or overall performance\n"
+        "- evaluate-performance: User wants to evaluate performance, progress, quiz results, or asks 'how am I doing', 'evaluate my quiz', 'show my progress', etc.\n"
         "Return JSON with 'intent' and 'confidence'.\n"
         f"User input: '{corrected_text}'"
     )
@@ -288,31 +289,28 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
     token = details.get("token")
     db = state.get("db")
     
-    url = f"{ACTIVITY_SERVICE_URL}/start-activity/"
-    headers = {"Content-Type": "application/json"}
+    # Get user information from state
+    details = state.get("details", {})
+    user_id = details.get("user_id")
+    if not user_id:
+        user_id = state.get("user_id")
+    if not user_id:
+        # Fetch the first user from the database
+        from app.models.user import User
+        db_session = state.get("db")
+        if db_session:
+            first_user = db_session.query(User).order_by(User.created_at).first()
+            if first_user:
+                user_id = str(first_user.id)
+            else:
+                raise ValueError("No users found in the database to use as created_by.")
+        else:
+            raise ValueError("Database session not available to fetch a user.")
     
     # Check if user provided a specific activity ID
     if "activity_id" in state and state["activity_id"]:
         activity_id = state["activity_id"]
         logger.info(f"Using provided activity ID: {activity_id}")
-        
-        # Get user information from state
-        details = state.get("details", {})
-        user_id = details.get("user_id")
-        if not user_id:
-            user_id = state.get("user_id")
-        if not user_id:
-            # Fetch the first user from the database
-            from app.models.user import User
-            db_session = state.get("db")
-            if db_session:
-                first_user = db_session.query(User).order_by(User.created_at).first()
-                if first_user:
-                    user_id = str(first_user.id)
-                else:
-                    raise ValueError("No users found in the database to use as created_by.")
-            else:
-                raise ValueError("Database session not available to fetch a user.")
         
         activity_payload = {
             "activity_id": str(activity_id),
@@ -346,24 +344,6 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
             # Extract structured information from the prompt
             extraction_result = await chat_completion({"prompt": extraction_prompt}, {}, json_mode=True)
             extracted_data = extraction_result.get("response", {})
-
-            # Get user information from state
-            details = state.get("details", {})
-            user_id = details.get("user_id")
-            if not user_id:
-                user_id = state.get("user_id")
-            if not user_id:
-                # Fetch the first user from the database
-                from app.models.user import User
-                db_session = state.get("db")
-                if db_session:
-                    first_user = db_session.query(User).order_by(User.created_at).first()
-                    if first_user:
-                        user_id = str(first_user.id)
-                    else:
-                        raise ValueError("No users found in the database to use as created_by.")
-                else:
-                    raise ValueError("Database session not available to fetch a user.")
             
             # Create the payload that the /start-activity endpoint expects
             activity_payload = {
@@ -378,96 +358,62 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
             print(f"Activity payload: {activity_payload}")
             
             # Try to find exact match in database first
-            if activity_payload["activity_name"]:
-                if not db:
-                    print("Database session not available, will use HTTP endpoint for fuzzy matching")
-                else:
-                    print(f"=== DATABASE LOOKUP DEBUG ===")
-                    
-                    # Build query based on available extracted data
-                    query = db.query(Activity).options(
-                        joinedload(Activity.category),
-                        joinedload(Activity.sub_category)
-                    ).filter(Activity.is_active == True)
-                    
-                    # Add filters based on extracted data
-                    if activity_payload["activity_name"]:
-                        query = query.filter(Activity.name.ilike(f"%{activity_payload['activity_name']}%"))
-                        print(f"Added activity name filter: '%{activity_payload['activity_name']}%'")
-                    
-                    # Handle category as foreign key - first find category ID by name
-                    if activity_payload["category_name"]:
-                        category = db.query(ActivityCategory).filter(ActivityCategory.name.ilike(f"%{activity_payload['category_name']}%")).first()
-                        if category:
-                            query = query.filter(Activity.category_id == category.id)
-                            print(f"Filtering by category: {category.name} (ID: {category.id})")
-                        else:
-                            print(f"No category found matching: {activity_payload['category_name']}")
-                    
-                    # Handle subcategory as foreign key - first find subcategory ID by name
-                    if activity_payload["subcategory_name"]:
-                        subcategory = db.query(ActivitySubCategory).filter(ActivitySubCategory.name.ilike(f"%{activity_payload['subcategory_name']}%")).first()
-                        if subcategory:
-                            query = query.filter(Activity.sub_category_id == subcategory.id)
-                            print(f"Filtering by subcategory: {subcategory.name} (ID: {subcategory.id})")
-                            if subcategory.description is None:
-                                subcategory.description = ""
-                        else:
-                            print(f"No subcategory found matching: {activity_payload['subcategory_name']}")
-                    
-                    # Get all matches
-                    matches = query.all()
-                    print(f"Found {len(matches)} matches")
-                    
-                    # Debug: Show all matches
-                    for i, match in enumerate(matches):
-                        print(f"Match {i+1}: {match.name} (ID: {match.id}, Category: {match.category.name if match.category else 'None'}, SubCategory: {match.sub_category.name if match.sub_category else 'None'})")
-                    
-                    if len(matches) == 1:
-                        # Single exact match - use it directly
-                        exact_match = matches[0]
-                        print(f"Found single exact match: {exact_match.name} (ID: {exact_match.id})")
-                        activity_payload["activity_id"] = str(exact_match.id)  # Convert UUID to string
-                        # Clear other fields since we're using ID for direct lookup
-                        activity_payload["activity_name"] = None
-                        activity_payload["category_name"] = None
-                        activity_payload["subcategory_name"] = None
+            if activity_payload["activity_name"] and db:
+                print(f"=== DATABASE LOOKUP DEBUG ===")
+                
+                # Build query based on available extracted data
+                query = db.query(Activity).options(
+                    joinedload(Activity.category),
+                    joinedload(Activity.sub_category)
+                ).filter(Activity.is_active == True)
+                
+                # Add filters based on extracted data
+                if activity_payload["activity_name"]:
+                    query = query.filter(Activity.name.ilike(f"%{activity_payload['activity_name']}%"))
+                    print(f"Added activity name filter: '%{activity_payload['activity_name']}%'")
+                
+                # Handle category as foreign key - first find category ID by name
+                if activity_payload["category_name"]:
+                    category = db.query(ActivityCategory).filter(ActivityCategory.name.ilike(f"%{activity_payload['category_name']}%")).first()
+                    if category:
+                        query = query.filter(Activity.category_id == category.id)
+                        print(f"Filtering by category: {category.name} (ID: {category.id})")
                     else:
-                        print("No exact match found, will use fuzzy matching")
-                        
-                    # Debug: Show all activities in database
-                    all_activities = db.query(Activity).filter(Activity.is_active == True).all()
-                    print(f"Total active activities in database: {len(all_activities)}")
-                    for i, act in enumerate(all_activities[:5]):  # Show first 5
-                        print(f"Activity {i+1}: {act.name} (Category: {act.category.name if act.category else 'None'}, SubCategory: {act.sub_category.name if act.sub_category else 'None'})")
+                        print(f"No category found matching: {activity_payload['category_name']}")
+                
+                # Handle subcategory as foreign key - first find subcategory ID by name
+                if activity_payload["subcategory_name"]:
+                    subcategory = db.query(ActivitySubCategory).filter(ActivitySubCategory.name.ilike(f"%{activity_payload['subcategory_name']}%")).first()
+                    if subcategory:
+                        query = query.filter(Activity.sub_category_id == subcategory.id)
+                        print(f"Filtering by subcategory: {subcategory.name} (ID: {subcategory.id})")
+                    else:
+                        print(f"No subcategory found matching: {activity_payload['subcategory_name']}")
+                
+                # Get all matches
+                matches = query.all()
+                print(f"Found {len(matches)} matches")
+                
+                # Debug: Show all matches
+                for i, match in enumerate(matches):
+                    print(f"Match {i+1}: {match.name} (ID: {match.id}, Category: {match.category.name if match.category else 'None'}, SubCategory: {match.sub_category.name if match.sub_category else 'None'})")
+                
+                if len(matches) == 1:
+                    # Single exact match - use it directly
+                    exact_match = matches[0]
+                    print(f"Found single exact match: {exact_match.name} (ID: {exact_match.id})")
+                    activity_payload["activity_id"] = str(exact_match.id)  # Convert UUID to string
+                    # Clear other fields since we're using ID for direct lookup
+                    activity_payload["activity_name"] = None
+                    activity_payload["category_name"] = None
+                    activity_payload["subcategory_name"] = None
+                else:
+                    print("No exact match found, will use fuzzy matching")
                     
-                    print(f"=== END DATABASE LOOKUP DEBUG ===")
+                print(f"=== END DATABASE LOOKUP DEBUG ===")
             
         except Exception as e:
             logger.warning(f"Failed to extract structured data: {e}")
-
-            # Get user information from state
-            details = state.get("details", {})
-            user_id = details.get("user_id")
-            if not user_id:
-                user_id = state.get("user_id")
-            
-            # Also check if user_id is directly in the state (from run_agent input)
-            if not user_id:
-                user_id = state.get("user_id")
-            
-            if not user_id:
-                # Fetch the first user from the database
-                from app.models.user import User
-                db_session = state.get("db")
-                if db_session:
-                    first_user = db_session.query(User).order_by(User.created_at).first()
-                    if first_user:
-                        user_id = str(first_user.id)
-                    else:
-                        raise ValueError("No users found in the database to use as created_by.")
-                else:
-                    raise ValueError("Database session not available to fetch a user.")
             # Fallback: use the entire prompt as activity name
             activity_payload = {
                 "activity_name": prompt,
@@ -477,26 +423,20 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
                 "created_by": user_id
             }
             logger.info(f"Using fallback payload: {activity_payload}")
-        
-        goto_http_request = False
     
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-        logger.info(f"Authorization header set: Bearer {token[:20]}...")
-    else:
-        logger.error("No token found in payload details")
-
     try:
-        logger.debug(f"Making HTTP request to: {url}")
-        logger.debug(f"Request payload: {activity_payload}")
+        # Instead of making HTTP calls, use the internal agent router
+        # Import the start_activity_handler function from the agent module
+        from app.agent.start_activity import start_activity_handler
         
-        async with httpx.AsyncClient() as client_http:
-            resp = await client_http.post(url, json=activity_payload, headers=headers, timeout=30)
+        logger.debug(f"Calling internal start_activity_handler with payload: {activity_payload}")
         
-        logger.debug(f"HTTP response status: {resp.status_code}")
-        resp.raise_for_status()
-        result = resp.json()
-        logger.debug(f"HTTP response body: {result}")
+        # Call the internal start_activity_handler function
+        # Convert the payload to user_input format
+        user_input = prompt  # Use the original prompt as user input
+        result = await start_activity_handler(user_input, db)
+        
+        logger.debug(f"Internal start_activity_handler result: {result}")
         
         # Extract activity_id if present in the result
         activity_id = ""
@@ -511,6 +451,7 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
             **result,
             "activity_id": activity_id
         }
+        
     except Exception as e:
         logger.error(f"Start activity failed: {e}")
         raise
@@ -580,11 +521,148 @@ async def generate_activity_handler(state: dict, config: dict) -> dict:
 
 async def evaluate_performance_handler(state: dict, config: dict) -> dict:
     logger.debug("Evaluate performance handler")
-    result = {
-        "message": "Performance evaluation feature is coming soon!",
-        "activity_id": ""
-    }
-    return result
+    
+    try:
+        # Get user information
+        details = state.get("details", {})
+        user_id = details.get("user_id")
+        if not user_id:
+            user_id = state.get("user_id")
+        
+        if not user_id:
+            from app.models.user import User
+            db_session = state.get("db")
+            if db_session:
+                first_user = db_session.query(User).order_by(User.created_at).first()
+                if first_user:
+                    user_id = str(first_user.id)
+                else:
+                    return {
+                        "message": "❌ No user found. Please log in to evaluate performance.",
+                        "activity_id": ""
+                    }
+            else:
+                return {
+                    "message": "❌ Database session not available for evaluation.",
+                    "activity_id": ""
+                }
+        
+        db = state.get("db")
+        if not db:
+            return {
+                "message": "❌ Database session required for evaluation.",
+                "activity_id": ""
+            }
+        
+        prompt = state.get("prompt", "")
+        
+        # Extract activity information from the prompt
+        extraction_prompt = f"""
+        Extract evaluation details from this user request. Return JSON with:
+        - activity_id: Specific activity ID if mentioned
+        - activity_name: Activity name if mentioned
+        - evaluation_type: Type of evaluation (quiz, progress, comprehensive, etc.)
+        - specific_focus: What specific aspect to evaluate (if mentioned)
+        
+        User request: "{prompt}"
+        
+        Examples:
+        - "evaluate my quiz" → {{"activity_id": "", "activity_name": "", "evaluation_type": "quiz", "specific_focus": "quiz performance"}}
+        - "how am I doing in machine learning" → {{"activity_id": "", "activity_name": "machine learning", "evaluation_type": "comprehensive", "specific_focus": "overall progress"}}
+        - "evaluate my progress" → {{"activity_id": "", "activity_name": "", "evaluation_type": "progress", "specific_focus": "learning progress"}}
+        """
+        
+        extraction_result = await chat_completion({"prompt": extraction_prompt}, {}, json_mode=True)
+        extracted_data = extraction_result.get("response", {})
+        
+        # Get current activity if not specified
+        activity_id = extracted_data.get("activity_id", "")
+        if not activity_id:
+            # Try to find the most recent activity for the user
+            from app.models.activity_session import ActivitySession
+            recent_session = db.query(ActivitySession).filter(
+                ActivitySession.user_id == user_id
+            ).order_by(ActivitySession.created_at.desc()).first()
+            
+            if recent_session:
+                activity_id = str(recent_session.activity_id)
+            else:
+                # If no recent activity, create a comprehensive evaluation
+                activity_id = "comprehensive"
+        
+        # Create evaluation agent
+        from app.agent.evaluation_agent import EvaluationAgent
+        evaluation_agent = EvaluationAgent(db)
+        
+        # Convert to UUID if it's a valid UUID
+        try:
+            activity_uuid = UUID(activity_id) if activity_id != "comprehensive" else None
+        except ValueError:
+            activity_uuid = None
+        
+        # Run evaluation
+        evaluation_result = await evaluation_agent.evaluate(
+            user_id=UUID(user_id),
+            activity_id=activity_uuid if activity_uuid else UUID("00000000-0000-0000-0000-000000000000"),
+            chat_context=prompt,
+            triggered_by="chat"
+        )
+        
+        # Format the response for chat
+        overall_score = evaluation_result.get("overall_score", 0)
+        evaluation_type = evaluation_result.get("evaluation_type", "comprehensive")
+        summary = evaluation_result.get("summary", "Evaluation completed successfully.")
+        
+        # Create a user-friendly message
+        if overall_score > 0:
+            score_message = f"🎯 **Overall Score: {overall_score:.1f}%**\n\n"
+        else:
+            score_message = ""
+        
+        # Get key insights
+        strengths = evaluation_result.get("strengths", [])
+        recommendations = evaluation_result.get("recommendations", [])
+        
+        strengths_text = ""
+        if strengths:
+            strengths_text = "✅ **Your Strengths:**\n" + "\n".join([f"• {strength}" for strength in strengths[:3]]) + "\n\n"
+        
+        recommendations_text = ""
+        if recommendations:
+            recommendations_text = "💡 **Recommendations:**\n" + "\n".join([f"• {rec}" for rec in recommendations[:3]]) + "\n\n"
+        
+        # Combine the message
+        full_message = f"{score_message}{summary}\n\n{strengths_text}{recommendations_text}"
+        
+        # Add follow-up options
+        full_message += "🔍 **What would you like to explore further?**\n"
+        full_message += "• Detailed quiz analysis\n"
+        full_message += "• Learning progress trends\n"
+        full_message += "• Specific topic performance\n"
+        full_message += "• Personalized study recommendations"
+        
+        result = {
+            "message": full_message,
+            "activity_id": activity_id,
+            "evaluation_data": {
+                "overall_score": overall_score,
+                "evaluation_type": evaluation_type,
+                "strengths": strengths,
+                "recommendations": recommendations,
+                "detailed_results": evaluation_result.get("detailed_results", {})
+            }
+        }
+        
+        logger.info(f"Evaluation completed for user {user_id} with score {overall_score}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Evaluation failed: {str(e)}")
+        return {
+            "message": f"❌ Evaluation failed: {str(e)}",
+            "activity_id": "",
+            "error": str(e)
+        }
 
 async def create_activity_handler(state: dict, config: dict) -> dict:
     logger.debug("Create activity handler")

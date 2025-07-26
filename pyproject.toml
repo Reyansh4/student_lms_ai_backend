@@ -33,6 +33,8 @@ dependencies = [
     "langchain-chroma>=0.2.4",
     "langchain-huggingface>=0.3.0",
     "sentence-transformers>=5.0.0",
+    "pgvector>=0.2.4",
+    "numpy>=1.24.0",
 ]
 requires-python = ">=3.11"
 

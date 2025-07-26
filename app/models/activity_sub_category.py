@@ -1,6 +1,6 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, UUID, func
+from sqlalchemy import Column, String, Text, DateTime, UUID, ForeignKey, func
 from sqlalchemy.orm import relationship
-from app.db.base import Base
+from app.db.base_class import Base
 import uuid
 
 class ActivitySubCategory(Base):

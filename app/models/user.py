@@ -2,7 +2,7 @@ from sqlalchemy import Boolean, Column, String, DateTime, UUID, ForeignKey
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
-from app.db.base import Base
+from app.db.base_class import Base
 
 class User(Base):
     __tablename__ = "users"
@@ -29,4 +29,7 @@ class User(Base):
     # Document relationships - documents are uploaded by users but belong to activities
     uploaded_documents = relationship("Document", back_populates="uploader", foreign_keys="Document.uploaded_by")
     document_chat_sessions = relationship("DocumentChatSession", back_populates="user")
+    # Evaluation relationships
+    evaluations = relationship("EvaluationResult", back_populates="user", cascade="all, delete-orphan")
+    learning_progress = relationship("LearningProgress", back_populates="user", cascade="all, delete-orphan")
     

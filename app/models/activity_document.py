@@ -1,6 +1,6 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, JSON, UUID, func
+from sqlalchemy import Column, String, DateTime, UUID, ForeignKey, Text, func, Enum, JSON
 from sqlalchemy.orm import relationship
-from app.db.base import Base
+from app.db.base_class import Base
 import uuid
 import enum
 

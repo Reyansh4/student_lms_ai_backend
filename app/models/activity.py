@@ -1,6 +1,6 @@
 from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, Enum, UUID, func, JSON
 from sqlalchemy.orm import relationship
-from app.db.base import Base
+from app.db.base_class import Base
 import uuid
 import enum
 
@@ -46,4 +46,7 @@ class Activity(Base):
     documents = relationship("ActivityDocument", back_populates="activity")
     # Add new document relationships for RAG system
     rag_documents = relationship("Document", back_populates="activity")
-    document_chat_sessions = relationship("DocumentChatSession", back_populates="activity") 
+    document_chat_sessions = relationship("DocumentChatSession", back_populates="activity")
+    # Evaluation relationships
+    evaluations = relationship("EvaluationResult", back_populates="activity", cascade="all, delete-orphan")
+    learning_progress = relationship("LearningProgress", back_populates="activity", cascade="all, delete-orphan") 

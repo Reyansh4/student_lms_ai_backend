@@ -1,6 +1,6 @@
 import uuid
-from sqlalchemy import Column, String, Text, ForeignKey, Enum, UUID
-from app.db.base import Base
+from sqlalchemy import Column, String, Text, DateTime, UUID, ForeignKey, JSON, func, Enum
+from app.db.base_class import Base
 import enum
 
 class DifficultyLevel(enum.Enum):

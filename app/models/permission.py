@@ -2,7 +2,7 @@
 from sqlalchemy import Column, String, DateTime, UUID, Boolean, func
 from sqlalchemy.orm import relationship
 import uuid
-from app.db.base import Base
+from app.db.base_class import Base
 
 class Permission(Base):
     __tablename__ = "permissions"
