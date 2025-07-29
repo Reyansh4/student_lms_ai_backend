@@ -1,4 +1,5 @@
 import json
+import pdb  # Add this import at the top
 from app.core.logger import get_logger
 from typing import Any, Dict
 import httpx
@@ -220,23 +221,49 @@ async def classify_intent(state: dict, config: dict) -> dict:
     
     result = classification.get("response", {})
     
-    if "text" in result:
-        text = result["text"].lower()
-        intent = "unknown"
-        if any(w in text for w in ["hello","hi","hey"]): intent="greetings"
-        elif "what can you do" in text: intent="capabilities"
-        elif "start" in text: intent="start-activity"
-        result = {"intent": intent, "confidence": 0.5}
+    logger.debug(f"LLM classification response: {result}")
+    logger.debug(f"LLM response type: {type(result)}")
+    logger.debug(f"LLM response keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
     
-    intent = result.get("intent", "unknown").lower()
+    # Check if the LLM returned a proper JSON response
+    if isinstance(result, dict) and "intent" in result:
+        # LLM successfully classified the intent
+        intent = result.get("intent", "unknown").lower()
+        confidence = result.get("confidence", 0.0)
+        logger.debug(f"Using LLM classification: {intent} (confidence: {confidence})")
+    else:
+        # Fallback logic for when LLM returns text instead of JSON
+        logger.debug(f"LLM returned unexpected format, using fallback logic")
+        logger.debug(f"Result content: {result}")
+        if "text" in result:
+            text = result["text"].lower()
+            intent = "unknown"
+            if any(w in text for w in ["hello","hi","hey"]): intent="greetings"
+            elif "what can you do" in text: intent="capabilities"
+            elif any(w in text for w in ["start", "begin", "launch", "open", "run"]): intent="start-activity"
+            confidence = 0.5
+            logger.debug(f"Fallback classification: {intent} (confidence: {confidence})")
+        else:
+            intent = "unknown"
+            confidence = 0.0
+            logger.debug(f"No classification possible, defaulting to unknown")
+    
+    # Additional fallback: Check the original prompt for start activity keywords
+    if intent == "unknown":
+        original_prompt = state.get("prompt", "").lower()
+        logger.debug(f"Checking original prompt for keywords: {original_prompt}")
+        if any(w in original_prompt for w in ["start", "begin", "launch", "open", "run", "activity"]):
+            intent = "start-activity"
+            confidence = 0.7
+            logger.debug(f"Fallback to start-activity based on prompt keywords: {intent}")
+    
     valid_intents = {"create-activity","edit-activity","delete-activity","list-activities","start-activity","generate-activity","greetings","capabilities","evaluate-performance"}
     if intent not in valid_intents:
         intent="unknown"
     
-    confidence = result.get("confidence", 0.0)
     operation = intent.replace("-activity","") if intent.endswith("-activity") else intent
     
-    logger.debug(f"Intent classified: {intent} (confidence: {confidence})")
+    logger.debug(f"Final intent classification: {intent} (confidence: {confidence})")
     
     # CRITICAL: Preserve the original state while adding classification results
     output = {
@@ -253,7 +280,8 @@ async def greet_user(state: dict, config: dict) -> dict:
     logger.debug("Greet user handler")
     result = {
         "message": "Hi! I'm **Leena AI**, your learning assistant—how can I help you today?",
-        "activity_id": ""
+        "activity_id": "",
+        "intent": state.get("intent", "greetings")
     }
     return result
 
@@ -268,7 +296,8 @@ async def describe_capabilities(state: dict, config: dict) -> dict:
             "- generate tests and evaluate answers\n"
             "…and more, just ask!"
         ),
-        "activity_id": ""
+        "activity_id": "",
+        "intent": state.get("intent", "capabilities")
     }
     return result
 
@@ -434,7 +463,7 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
         # Call the internal start_activity_handler function
         # Convert the payload to user_input format
         user_input = prompt  # Use the original prompt as user input
-        result = await start_activity_handler(user_input, db)
+        result = await start_activity_handler(user_input, db, user_id)
         
         logger.debug(f"Internal start_activity_handler result: {result}")
         
@@ -449,7 +478,8 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
         
         return {
             **result,
-            "activity_id": activity_id
+            "activity_id": activity_id,
+            "intent": state.get("intent", "start-activity")  # Preserve the intent
         }
         
     except Exception as e:
@@ -479,12 +509,17 @@ async def route_activity(state: dict, config: dict) -> dict:
         result = await activity_crud(filtered_state, config)
         return result.get("result", {})
     elif operation == "unknown":
-        result = {"error": "Could not determine intent, please rephrase."}
+        result = {
+            "error": "Could not determine intent, please rephrase.",
+            "intent": state.get("intent", "unknown")
+        }
         return result
     else:
         # For other operations (edit, delete), use the original state
         result = await activity_crud(state, config)
-        return result.get("result", {})
+        result_data = result.get("result", {})
+        result_data["intent"] = state.get("intent", operation)
+        return result_data
 
 async def extract_list_filters(prompt: str) -> dict:
     """Extract activity listing filters from user prompt"""
@@ -679,6 +714,7 @@ async def create_activity_handler(state: dict, config: dict) -> dict:
         - subcategory_name: Specific topic (e.g., algebra, physics, world war)
         - difficulty_level: Beginner, Intermediate, or Advanced
         - final_description: Detailed activity description
+        - intent: The intent of the user (e.g., create-activity, edit-activity, delete-activity, list-activities, start-activity, generate-activity, greetings, capabilities, evaluate-performance)
         
         User request: "{prompt}"
         """
@@ -838,23 +874,33 @@ workflow.add_node("evaluate_performance_handler", evaluate_performance_handler)
 def route_from_classify_intent(state):
     intent = state.get("intent")
     logger.debug(f"Routing intent: {intent}")
+    logger.debug(f"State keys: {list(state.keys())}")
+    logger.debug(f"Full state: {state}")
     
     if intent == "greetings":
+        logger.debug("Routing to greet_user")
         return "greet_user"
     elif intent == "capabilities":
+        logger.debug("Routing to describe_capabilities")
         return "describe_capabilities"
     elif intent == "start-activity":
+        logger.debug("Routing to start_activity_tool")
         return "start_activity_tool"
     elif intent == "generate-activity":
+        logger.debug("Routing to generate_activity_handler")
         return "generate_activity_handler"
     elif intent == "create-activity":
+        logger.debug("Routing to create_activity_handler")
         return "create_activity_handler"
     elif intent in {"edit-activity", "delete-activity", "list-activities"}:
+        logger.debug("Routing to route_activity")
         return "route_activity"
     elif intent == "evaluate-performance":
+        logger.debug("Routing to evaluate_performance_handler")
         return "evaluate_performance_handler"
     else:
         # For unknown intents, route to route_activity which will handle the error
+        logger.debug(f"Unknown intent '{intent}', routing to route_activity")
         return "route_activity"
 
 workflow.add_conditional_edges("classify_intent", route_from_classify_intent)
@@ -891,20 +937,29 @@ async def run_agent(input_data: dict) -> dict:
     logger.debug("Invoking agent workflow...")
     result = await agent.ainvoke(state)
     
+    logger.debug(f"Agent workflow result: {result}")
+    
     # Handle the new flattened response structure
     # Handlers now return results directly, not wrapped in a "result" object
     if "result" in result:
         # Some handlers might still return the old format, handle both
         reply = result.get("result", {}).get("message", "")
         result_data = result.get("result", {})
+        logger.debug(f"Using old format response")
     else:
         # New format: handlers return data directly
         reply = result.get("message", "")
         result_data = result
+        logger.debug(f"Using new format response")
+    
+    logger.debug(f"Reply: {reply}")
+    logger.debug(f"Result data: {result_data}")
+    logger.debug(f"Intent from result: {result.get('intent', 'not found')}")
     
     store.add_message(session.session_id, "assistant", reply)
     
     output = {"intent": result.get("intent", "unknown"), "result": result_data, "session_id": session.session_id}
+    logger.debug(f"Final output intent: {output['intent']}")
     logger.debug("Run agent completed successfully")
     
     if trace:

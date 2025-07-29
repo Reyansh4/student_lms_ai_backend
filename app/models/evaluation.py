@@ -59,6 +59,7 @@ class EvaluationResult(Base):
     user = relationship("User", back_populates="evaluations")
     activity = relationship("Activity", back_populates="evaluations")
     session = relationship("ActivitySession", back_populates="evaluations")
+    quiz_questions = relationship("QuizQuestion", back_populates="evaluation", cascade="all, delete-orphan")
 
 class QuizQuestion(Base):
     __tablename__ = "quiz_questions"

@@ -32,4 +32,6 @@ class ActivitySession(Base):
     user = relationship("User", foreign_keys=[user_id], back_populates="activity_sessions")
     grader = relationship("User", foreign_keys=[graded_by], back_populates="graded_sessions")
     # Evaluation relationships
-    evaluations = relationship("EvaluationResult", back_populates="session", cascade="all, delete-orphan") 
+    evaluations = relationship("EvaluationResult", back_populates="session", cascade="all, delete-orphan")
+    # AI Response relationships
+    ai_responses = relationship("ActivityAIResponse", back_populates="session", cascade="all, delete-orphan") 
