@@ -1,12 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.core.config import settings
+from app.config import settings
 from app.core.logger import get_logger
 from app.routes import api_router
 from app.db.base import Base
 from app.db.session import engine
 # Import agent router
-from app.agent.routers import router as agent_router
+from app.agents.routers import router as agent_router
 from app.api.memory import router as memory_router
 
 # Initialize logger

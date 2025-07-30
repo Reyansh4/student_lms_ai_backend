@@ -1,3 +1,7 @@
+"""
+Azure OpenAI configuration settings
+"""
+
 from pydantic import BaseModel
 import os
 import logging
@@ -9,15 +13,21 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 class AzureConfig(BaseModel):
+    """Azure OpenAI configuration model"""
     endpoint: str
     api_key: str
     deployment: str = "gpt-4o-mini"
     api_version: str = "2024-02-15-preview"
+    embedding_deployment: str = "text-embedding-ada-002"
 
     def validate_config(self) -> bool:
-        if not self.endpoint.startswith("https://"): return False
-        if not self.endpoint.endswith("/"): self.endpoint += "/"
-        if not self.api_key or len(self.api_key) < 10: return False
+        """Validate Azure configuration"""
+        if not self.endpoint.startswith("https://"): 
+            return False
+        if not self.endpoint.endswith("/"): 
+            self.endpoint += "/"
+        if not self.api_key or len(self.api_key) < 10: 
+            return False
         return True
 
 def load_azure_config() -> AzureConfig:
@@ -26,7 +36,8 @@ def load_azure_config() -> AzureConfig:
         endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
         api_key=os.getenv("AZURE_OPENAI_KEY", ""),
         deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini"),
-        api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+        api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview"),
+        embedding_deployment=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-ada-002")
     )
     if not cfg.validate_config():
         logger.error("Invalid Azure configuration")

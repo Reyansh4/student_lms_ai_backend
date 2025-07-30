@@ -23,7 +23,7 @@ from app.schemas.activity import (
     ExtendedStartActivityInput,
     ExtendedStartActivityResponse,
 )
-from app.agent.chat import run_agent
+from app.agents.chat_agent import run_agent
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

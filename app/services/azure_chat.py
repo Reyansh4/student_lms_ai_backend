@@ -9,7 +9,7 @@ from datetime import datetime
 import sys
 import traceback
 
-from app.core.azure_config import load_azure_config
+from app.config import load_azure_config
 
 class AzureChat:
     def __init__(

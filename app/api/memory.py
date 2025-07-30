@@ -11,7 +11,7 @@ from app.models.user import User
 from functools import lru_cache
 
 # import for embeddings
-from app.core.azure_config import load_azure_config
+from app.config import load_azure_config
 from openai import AsyncAzureOpenAI
 
 router = APIRouter(prefix="/memory", tags=["memory"])

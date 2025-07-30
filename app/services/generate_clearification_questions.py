@@ -1,7 +1,7 @@
 import os
 from typing import List
 import aiofiles
-from app.core.azure_config import load_azure_config
+from app.config import load_azure_config
 from app.services.azure_chat import AzureChat
 
 # Path to the markdown template for prompting
