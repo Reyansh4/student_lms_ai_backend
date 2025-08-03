@@ -58,18 +58,23 @@ class AgentTools:
                 # Check for activity management keywords first
                 activity_keywords = ["activities", "activity"]
                 list_keywords = ["list", "show", "find", "get", "display", "see"]
+                create_keywords = ["create", "make", "new"]
+                start_keywords = ["start", "begin", "execute", "do", "generate"]
+                quiz_keywords = ["quiz", "lesson", "assignment", "exercise"]
                 
                 if any(list_word in text for list_word in list_keywords) and any(activity_word in text for activity_word in activity_keywords):
                     intent = "list-activities"
                     logger.debug("Detected list-activities intent in fallback")
-                elif any(w in text for w in ["create", "make", "new"]) and any(w in text for w in ["activities", "activity"]): 
+                elif any(w in text for w in create_keywords) and any(w in text for w in quiz_keywords): 
                     intent = "create-activity"
+                    logger.debug("Detected create-activity intent in fallback")
+                elif any(w in text for w in start_keywords) and any(w in text for w in quiz_keywords): 
+                    intent = "start-activity"
+                    logger.debug("Detected start-activity intent in fallback")
                 elif any(w in text for w in ["edit", "update", "modify"]) and any(w in text for w in ["activities", "activity"]): 
                     intent = "edit-activity"
                 elif any(w in text for w in ["delete", "remove"]) and any(w in text for w in ["activities", "activity"]): 
                     intent = "delete-activity"
-                elif "start" in text: 
-                    intent = "start-activity"
                 elif any(w in text for w in ["hello","hi","hey"]): 
                     intent = "greetings"
                 elif "what can you do" in text: 
@@ -78,8 +83,6 @@ class AgentTools:
                     intent = "learning-support"
                 elif any(w in text for w in ["tutor", "expert", "designer", "evaluator", "coach", "visual"]): 
                     intent = "single-agent-consultation"
-                elif any(w in text for w in ["generate", "create", "make"]) and any(w in text for w in ["quiz", "lesson", "assignment", "exercise"]): 
-                    intent = "generate-activity"
                 elif any(w in text for w in ["collaborative", "multiple", "together", "team"]): 
                     intent = "collaborative-learning"
                 

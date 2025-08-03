@@ -86,7 +86,7 @@ async def describe_capabilities(state: dict, config: dict) -> dict:
     return result
 
 async def start_activity_tool(state: dict, config: dict) -> dict:
-    """Handle start activity requests"""
+    """Handle start activity requests - generates content, stores in DB, and executes"""
     logger.debug(f"=== START_ACTIVITY_TOOL START ===")
     logger.debug(f"Input state: {state}")
     
@@ -99,114 +99,119 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
     logger.debug(f"Token present: {token is not None}")
     logger.debug(f"Database session present: {db is not None}")
     
-    url = f"{settings.SERVER_HOST}{settings.API_PREFIX}/agent/start-activity"
-    headers = {}
-    
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-        logger.info(f"Authorization header set: Bearer {token[:20]}...")
-    else:
-        logger.error("No token found in payload details")
-    
     try:
         # Extract activity details using centralized tools
         activity_details = await agent_tools.extract_activity_details(prompt)
         
-        activity_payload = {
-            "activity_name": activity_details.get("activity_name"),
-            "category_name": activity_details.get("category_name"),
-            "subcategory_name": activity_details.get("subcategory_name"),
-            "activity_id": None
-        }
+        activity_name = activity_details.get("activity_name", "Quiz")
+        category_name = activity_details.get("category_name", "General")
+        subcategory_name = activity_details.get("subcategory_name")
         
-        logger.debug(f"Activity payload: {activity_payload}")
+        # First, try to find existing activity
+        existing_activity = None
+        if db:
+            # Search for existing activity
+            from app.models.activity import Activity
+            from app.models.activity_category import ActivityCategory
+            from app.models.activity_sub_category import ActivitySubCategory
+            
+            # Try to find by name and category
+            existing_activity = db.query(Activity).join(ActivityCategory).filter(
+                Activity.name.ilike(f"%{activity_name}%"),
+                ActivityCategory.name.ilike(f"%{category_name}%")
+            ).first()
         
-        # Try to find exact match in database first
-        if activity_payload["activity_name"] and db:
-            # Database lookup logic (existing implementation)
-            logger.debug("Performing database lookup for activity")
-            # ... (existing database lookup code)
+        if existing_activity:
+            # Start existing activity
+            logger.debug(f"Found existing activity: {existing_activity.name}")
+            
+            # Call the start-activity endpoint
+            url = f"{settings.SERVER_HOST}{settings.API_PREFIX}/agent/start-activity"
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            
+            activity_payload = {
+                "activity_name": existing_activity.name,
+                "category_name": existing_activity.category.name if existing_activity.category else "General"
+            }
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, json=activity_payload, headers=headers, timeout=30)
+                response.raise_for_status()
+                result_data = response.json()
+                
+                if result_data.get("status") == "started":
+                    return {"result": {"message": f"✅ Started existing activity: {existing_activity.name}"}}
+                else:
+                    return {"result": {"message": f"Activity '{existing_activity.name}' initiated. Check the response for details."}}
         
-        # Make HTTP request to start activity
-        async with httpx.AsyncClient() as client_http:
-            resp = await client_http.post(
-                url,
-                json=activity_payload,
-                headers=headers,
-                timeout=10
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            logger.debug(f"HTTP response body: {data}")
-        
-        if data["status"] == "started":
-            final_description = data.get("final_description", "")
-            if final_description:
-                # Recursively invoke the agent with the final_description
-                new_state = {
-                    "prompt": final_description,
-                    "details": payload,
-                    "db": db
-                }
-                result = await agent.ainvoke(new_state)
-                msg = result.get("result", {}).get("message", "Activity executed, but no message returned.")
-            else:
-                msg = "Activity started, but no description was found."
         else:
-            sug = "\n".join(f"- {s['name']}" for s in data["suggestions"])
-            msg = (
-                "I found several activities matching your request:\n"
-                + sug +
-                "\n\nWhich one would you like to start?"
+            # Generate new activity content and store in DB
+            logger.debug(f"No existing activity found, generating new activity: {activity_name}")
+            
+            # Generate content using AI
+            from app.config.agent_config import get_chat_completion_config
+            config_settings = get_chat_completion_config()
+            
+            generation_prompt = f"""Create a comprehensive {activity_name} for {category_name}"""
+            if subcategory_name:
+                generation_prompt += f" focusing on {subcategory_name}"
+            generation_prompt += f". Include multiple choice questions, true/false, and short answer questions. Make it educational and engaging."""
+            
+            response = await agent_tools._chat_completion(
+                prompt=generation_prompt,
+                temperature=config_settings["default_temperature"],
+                max_tokens=config_settings["default_max_tokens"],
+                json_mode=False
             )
-        
-        result = {"result": {"message": msg}}
-        logger.debug(f"Start activity tool result: {result}")
-        logger.debug(f"=== START_ACTIVITY_TOOL SUCCESS ===")
-        return result
-        
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error: {e.response.status_code} - {e.response.text}")
-        result = {"result": {"error": f"HTTP error: {e.response.status_code} - {e.response.text}"}}
-        logger.debug(f"=== START_ACTIVITY_TOOL HTTP ERROR ===")
-        return result
-    except Exception as e:
-        logger.error(f"Start activity failed: {str(e)}")
-        result = {"result": {"error": f"Start activity failed: {str(e)}"}}
-        logger.debug(f"=== START_ACTIVITY_TOOL EXCEPTION ===")
-        return result
+            
+            generated_content = response.get("response", {}).get("text", response.get("response", ""))
+            
+            # Create activity in database
+            activity_data = {
+                "name": f"{category_name} {activity_name}",
+                "description": f"Generated {activity_name} for {category_name}",
+                "category_name": category_name,
+                "subcategory_name": subcategory_name or "General",
+                "difficulty_level": "Intermediate",
+                "access_type": "global",
+                "ai_guide": True,
+                "final_description": generated_content[:500] + "..." if len(generated_content) > 500 else generated_content
+            }
+            
+            # Store in database using enhanced endpoint
+            url = f"http://localhost:8000{settings.API_PREFIX}/activities/create_enhanced"
+            headers = {"Content-Type": "application/json"}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, json=activity_data, headers=headers, timeout=30)
+                response.raise_for_status()
+                created_activity = response.json()
+                
+                activity_id = created_activity.get("id")
+                created_category = created_activity.get("category", {}).get("name", "Unknown")
+                created_subcategory = created_activity.get("sub_category", {}).get("name", "Unknown")
+                
+                return {"result": {"message": f"""✅ **Activity Generated and Started Successfully!**
 
-async def generate_activity_handler(state: dict, config: dict) -> dict:
-    """Handle activity generation requests"""
-    logger.debug(f"=== GENERATE_ACTIVITY_HANDLER START ===")
-    logger.debug(f"Input state: {state}")
-    
-    prompt = state.get("prompt", "")
-    
-    try:
-        # Use centralized chat completion
-        from app.config.agent_config import get_chat_completion_config
-        config_settings = get_chat_completion_config()
-        response = await agent_tools._chat_completion(
-            prompt=prompt,
-            temperature=config_settings["default_temperature"],
-            max_tokens=config_settings["default_max_tokens"],
-            json_mode=config_settings["json_mode"]
-        )
-        
-        questions = response.get("response", {}).get("text", response.get("response", ""))
-        message = f"{questions}"
-        
-        result = {"result": {"message": message}}
-        logger.debug(f"Generate activity handler result: {result}")
-        logger.debug(f"=== GENERATE_ACTIVITY_HANDLER SUCCESS ===")
-        return result
+**Activity Details:**
+- **Name:** {activity_data['name']}
+- **ID:** {activity_id}
+- **Category:** {created_category}
+- **Subcategory:** {created_subcategory}
+- **Difficulty:** Intermediate
+
+**Generated Content:**
+{generated_content[:300]}{'...' if len(generated_content) > 300 else ''}
+
+Your activity has been created and is now ready to use!"""}}
         
     except Exception as e:
-        logger.error(f"Generate activity handler failed: {e}")
-        result = {"result": {"error": f"Activity generation failed: {str(e)}"}}
-        logger.debug(f"=== GENERATE_ACTIVITY_HANDLER ERROR ===")
-        return result
+        logger.error(f"Start activity tool failed: {e}")
+        return {"result": {"error": f"Activity generation/start failed: {str(e)}"}}
 
 async def collaborative_learning_handler(state: dict, config: dict) -> dict:
     """Handle collaborative learning requests"""
@@ -267,7 +272,7 @@ async def learning_support_handler(state: dict, config: dict) -> dict:
     
     try:
         # Check if this is an activity-related request
-        activity_keywords = ["list activities", "show activities", "find activities", "create activity", "new activity", "start activity", "edit activity", "delete activity", "activity"]
+        activity_keywords = ["list activities", "show activities", "find activities", "create activity", "new activity", "start activity", "edit activity", "delete activity", "activity", "create", "make", "generate"]
         is_activity_request = any(keyword in prompt.lower() for keyword in activity_keywords) or intent in ["list-activities", "create-activity", "edit-activity", "delete-activity", "start-activity"]
         
         logger.info(f"Is activity request: {is_activity_request}")
@@ -282,7 +287,7 @@ async def learning_support_handler(state: dict, config: dict) -> dict:
             - category: The main subject category (extract the exact category name mentioned)
             - subcategory: The broader topic within the category (extract the exact subcategory name mentioned)
             - activity_name: The specific activity name if mentioned
-            - difficulty_level: Any difficulty level mentioned (beginner, intermediate, advanced)
+            - difficulty_level: Any difficulty level mentioned (beginner, intermediate, advanced) - if not mentioned, use "Intermediate"
             - filters: Any additional filters mentioned (by user, by date, by popularity, etc.)
             - description: Any description or requirements mentioned
             
@@ -292,16 +297,18 @@ async def learning_support_handler(state: dict, config: dict) -> dict:
             - Subcategories are broader topics within each category like Trigonometry, Calculus, Refractive Index, Cell Biology, etc.
             - If no specific subcategory is mentioned, set subcategory to null
             - Preserve the exact spelling and case as mentioned in the prompt
+            - For "create" intents: Use "create" as the intent when user wants to make a new activity
+            - For "start" intents: Use "start" as the intent when user wants to begin an existing activity
+            - For "list" intents: Use "list" as the intent when user wants to see activities
+            - For difficulty_level: Use "Intermediate" as default if not specified
             
             **Examples:**
-            - "List all activities of Maths" → {{"intent": "list", "category": "Mathematics", "subcategory": null, "activity_name": null, "difficulty_level": null, "filters": null, "description": null}}
+            - "List all activities of Maths" → {{"intent": "list", "category": "Mathematics", "subcategory": null, "activity_name": null, "difficulty_level": "Intermediate", "filters": null, "description": null}}
             - "Create a calculus quiz for beginners" → {{"intent": "create", "category": "Mathematics", "subcategory": "Calculus", "activity_name": "calculus quiz", "difficulty_level": "beginner", "filters": null, "description": "quiz for beginners"}}
-            - "Start the algebra practice" → {{"intent": "start", "category": "Mathematics", "subcategory": "Algebra", "activity_name": "algebra practice", "difficulty_level": null, "filters": null, "description": null}}
-            - "Show me all physics activities about refractive index" → {{"intent": "list", "category": "Physics", "subcategory": "Refractive Index", "activity_name": null, "difficulty_level": null, "filters": null, "description": null}}
-            - "Find biology activities in genetics for advanced students" → {{"intent": "list", "category": "Biology", "subcategory": "Genetics", "activity_name": null, "difficulty_level": "advanced", "filters": null, "description": null}}
-            - "Create a trigonometry exercise" → {{"intent": "create", "category": "Mathematics", "subcategory": "Trigonometry", "activity_name": "trigonometry exercise", "difficulty_level": null, "filters": null, "description": null}}
-            - "List chemistry activities" → {{"intent": "list", "category": "Chemistry", "subcategory": null, "activity_name": null, "difficulty_level": null, "filters": null, "description": null}}
-            - "Start the history lesson" → {{"intent": "start", "category": "History", "subcategory": null, "activity_name": "history lesson", "difficulty_level": null, "filters": null, "description": null}}
+            - "Make a chemistry experiment" → {{"intent": "create", "category": "Chemistry", "subcategory": null, "activity_name": "chemistry experiment", "difficulty_level": "Intermediate", "filters": null, "description": null}}
+            - "Generate a physics quiz" → {{"intent": "create", "category": "Physics", "subcategory": null, "activity_name": "physics quiz", "difficulty_level": "Intermediate", "filters": null, "description": null}}
+            - "Create a Chemistry quiz on topic Hydrocarbon" → {{"intent": "create", "category": "Chemistry", "subcategory": "Hydrocarbon", "activity_name": "Chemistry quiz", "difficulty_level": "Intermediate", "filters": null, "description": "quiz on Hydrocarbon"}}
+            - "Start the algebra practice" → {{"intent": "start", "category": "Mathematics", "subcategory": "Algebra", "activity_name": "algebra practice", "difficulty_level": "Intermediate", "filters": null, "description": null}}
             
             Return only the JSON object:
             """
@@ -352,16 +359,16 @@ async def learning_support_handler(state: dict, config: dict) -> dict:
             if action_intent == "list" or action_intent == "list-activities" or action_intent == "search":
                 message = await handle_list_activities(activities_data, category, subcategory, difficulty_level, filters)
                 
-            elif action_intent == "create":
+            elif action_intent == "create" or action_intent == "create-activity":
                 message = await handle_create_activity(extracted_info, categories_data, state)
                 
-            elif action_intent == "start":
+            elif action_intent == "start" or action_intent == "start-activity":
                 message = await handle_start_activity(activity_name, category, subcategory, state)
                 
-            elif action_intent == "edit":
+            elif action_intent == "edit" or action_intent == "edit-activity":
                 message = await handle_edit_activity(activity_name, category, subcategory, state)
                 
-            elif action_intent == "delete":
+            elif action_intent == "delete" or action_intent == "delete-activity":
                 message = await handle_delete_activity(activity_name, category, subcategory, state)
                 
             else:
@@ -448,10 +455,19 @@ async def handle_list_activities(activities_data: list, category: str, subcatego
     
     # Filter by category (case-insensitive)
     if category:
+        logger.info(f"Filtering by category: '{category}'")
+        logger.info(f"Available categories in activities: {[activity.get('category', {}).get('name', 'Unknown') for activity in filtered_activities]}")
+        
         filtered_activities = [
             activity for activity in filtered_activities 
-            if activity.get("category") and category.lower() in activity["category"].get("name", "").lower()
+            if activity.get("category") and (
+                category.lower() in activity["category"].get("name", "").lower() or
+                activity["category"].get("name", "").lower() in category.lower()
+            )
         ]
+        
+        logger.info(f"After category filtering: {len(filtered_activities)} activities")
+        logger.info(f"Matched categories: {[activity.get('category', {}).get('name', 'Unknown') for activity in filtered_activities]}")
     
     # Filter by subcategory (case-insensitive)
     if subcategory and filtered_activities:
@@ -490,41 +506,95 @@ async def handle_list_activities(activities_data: list, category: str, subcatego
     return summary
 
 async def handle_create_activity(extracted_info: dict, categories_data: list, state: dict) -> str:
-    """Handle activity creation with guidance"""
+    """Handle activity creation with automatic creation"""
     activity_name = extracted_info.get("activity_name", "Your Activity")
     category = extracted_info.get("category")
     subcategory = extracted_info.get("subcategory")
-    difficulty_level = extracted_info.get("difficulty_level", "Intermediate")
+    difficulty_level = extracted_info.get("difficulty_level", "Intermediate")  # Default to Intermediate
     description = extracted_info.get("description", "Activity description")
     
-    # Find matching category ID
-    category_id = "uuid"  # Default
-    if category and categories_data:
-        for cat in categories_data:
-            if cat.get("name", "").lower() == category.lower():
-                category_id = str(cat.get("id"))
-                break
+    # Ensure difficulty_level is not None
+    if difficulty_level is None:
+        difficulty_level = "Intermediate"
     
-    return f"""To create the activity "{activity_name}", use this API endpoint:
+    try:
+        # Prepare the activity data for creation
+        activity_data = {
+            "name": activity_name,
+            "description": description,
+            "category_name": category or "General",
+            "subcategory_name": subcategory or "General",
+            "difficulty_level": difficulty_level,
+            "access_type": "global",
+            "ai_guide": True
+        }
+        
+        # Make the API call to create the activity
+        url = f"http://localhost:8000{settings.API_PREFIX}/activities/create_enhanced"
+        headers = {"Content-Type": "application/json"}
+        token = state.get("details", {}).get("token")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=activity_data, headers=headers, timeout=30)
+            response.raise_for_status()
+            created_activity = response.json()
+            
+            # Extract details from the created activity
+            activity_id = created_activity.get("id")
+            final_description = created_activity.get("final_description", "")
+            created_category = created_activity.get("category", {}).get("name", "Unknown")
+            created_subcategory = created_activity.get("sub_category", {}).get("name", "Unknown")
+            
+            return f"""✅ **Activity Created Successfully!**
 
-```POST /api/v1/activities
-{{
-  "name": "{activity_name}",
-  "description": "{description}",
-  "category_id": "{category_id}",
-  "difficulty_level": "{difficulty_level}",
-  "access_type": "public"
-}}
-```
+**Activity Details:**
+- **Name:** {activity_name}
+- **ID:** {activity_id}
+- **Category:** {created_category}
+- **Subcategory:** {created_subcategory}
+- **Difficulty:** {difficulty_level}
+- **Description:** {description}
 
-**Extracted Details:**
+**Auto-Generated Features:**
+✅ Category "{created_category}" {'created' if category else 'found'}
+✅ Subcategory "{created_subcategory}" {'created' if subcategory else 'found'}
+✅ AI-generated final description: {len(final_description)} characters
+
+**Final Description:**
+{final_description[:200]}{'...' if len(final_description) > 200 else ''}
+
+Your activity is now ready to use! You can start it by saying "Start the {activity_name}" or "Begin the {activity_name}"."""
+            
+    except httpx.HTTPStatusError as e:
+        error_msg = f"HTTP Error {e.response.status_code}: {e.response.text}"
+        logger.error(f"Error creating activity: {error_msg}")
+        return f"""❌ **Failed to Create Activity**
+
+**Error:** {error_msg}
+
+**Attempted to create:**
 - Name: {activity_name}
-- Category: {category or "Not specified"}
-- Subcategory: {subcategory or "Not specified"}
+- Category: {category or 'General'}
+- Subcategory: {subcategory or 'General'}
 - Difficulty: {difficulty_level}
-- Description: {description}
 
-You can also create activities using templates or generate them with AI assistance."""
+Please try again or check your permissions."""
+        
+    except Exception as e:
+        logger.error(f"Error creating activity: {e}")
+        return f"""❌ **Failed to Create Activity**
+
+**Error:** {str(e)}
+
+**Attempted to create:**
+- Name: {activity_name}
+- Category: {category or 'General'}
+- Subcategory: {subcategory or 'General'}
+- Difficulty: {difficulty_level}
+
+Please try again later."""
 
 async def handle_start_activity(activity_name: str, category: str, subcategory: str, state: dict) -> str:
     """Handle starting an activity"""
@@ -626,7 +696,6 @@ workflow.add_node("classify_intent", classify_intent)
 workflow.add_node("greet_user", greet_user)
 workflow.add_node("describe_capabilities", describe_capabilities)
 workflow.add_node("start_activity_tool", start_activity_tool)
-workflow.add_node("generate_activity_handler", generate_activity_handler)
 workflow.add_node("collaborative_learning_handler", collaborative_learning_handler)
 workflow.add_node("single_agent_consultation_handler", single_agent_consultation_handler)
 workflow.add_node("learning_support_handler", learning_support_handler)
@@ -643,7 +712,6 @@ def route_from_classify_intent(state):
         "greetings": "greet_user",
         "capabilities": "describe_capabilities",
         "start-activity": "start_activity_tool",
-        "generate-activity": "generate_activity_handler",
         "collaborative-learning": "collaborative_learning_handler",
         "single-agent-consultation": "single_agent_consultation_handler",
         "learning-support": "learning_support_handler",
@@ -663,7 +731,7 @@ workflow.add_conditional_edges("classify_intent", route_from_classify_intent)
 # Finish points
 workflow.set_entry_point("classify_intent")
 finish_nodes = [
-    "greet_user", "describe_capabilities", "start_activity_tool", "generate_activity_handler",
+    "greet_user", "describe_capabilities", "start_activity_tool",
     "collaborative_learning_handler", 
     "single_agent_consultation_handler", "learning_support_handler"
 ]

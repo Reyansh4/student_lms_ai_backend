@@ -15,6 +15,7 @@ from app.models.activity_sub_category import ActivitySubCategory
 from app.models.activity_category import ActivityCategory
 from app.schemas.activity import CategoryResponse, SubCategoryResponse, CategoryCreate,SubCategoryCreate,ClarificationQuestionsResponse,ClarificationAnswersRequest,FinalDescriptionResponse
 from sqlalchemy.orm import joinedload
+from app.models.activity import DifficultyLevel, AccessType
 
 
 
@@ -551,3 +552,110 @@ def get_activity_by_id(
             detail="Activity not found"
         )
     return activity
+
+@router.post("/create_enhanced", response_model=ActivityResponse, status_code=status.HTTP_201_CREATED)
+async def create_enhanced_activity(
+    activity_data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Create a new activity with automatic category/subcategory creation and AI description generation"""
+    logger.info(f"Creating enhanced activity: {activity_data.get('name')} by user: {current_user.email}")
+    
+    try:
+        # Extract data
+        activity_name = activity_data.get("name")
+        activity_description = activity_data.get("description", "")
+        category_name = activity_data.get("category_name")
+        subcategory_name = activity_data.get("subcategory_name")
+        difficulty_level = activity_data.get("difficulty_level", "Intermediate")
+        access_type = activity_data.get("access_type", "public")
+        
+        # Find or create category
+        category = None
+        if category_name:
+            category = db.query(ActivityCategory).filter(
+                ActivityCategory.name.ilike(f"%{category_name}%")
+            ).first()
+            
+            if not category:
+                logger.info(f"Creating new category: {category_name}")
+                category = ActivityCategory(
+                    name=category_name,
+                    description=f"Category for {category_name} activities"
+                )
+                db.add(category)
+                db.flush()  # Get the ID without committing
+        
+        # Find or create subcategory
+        subcategory = None
+        if subcategory_name and category:
+            subcategory = db.query(ActivitySubCategory).filter(
+                ActivitySubCategory.name.ilike(f"%{subcategory_name}%"),
+                ActivitySubCategory.category_id == category.id
+            ).first()
+            
+            if not subcategory:
+                logger.info(f"Creating new subcategory: {subcategory_name} under category: {category_name}")
+                subcategory = ActivitySubCategory(
+                    category_id=category.id,
+                    name=subcategory_name,
+                    description=f"Subcategory for {subcategory_name} in {category_name}"
+                )
+                db.add(subcategory)
+                db.flush()  # Get the ID without committing
+        
+        # Generate AI final description if not provided
+        final_description = activity_data.get("final_description")
+        if not final_description:
+            try:
+                from app.services.generate_final_description import generate_final_description
+                
+                activity_details = {
+                    "name": activity_name,
+                    "description": activity_description,
+                    "level": difficulty_level,
+                    "category_name": category.name if category else "General",
+                    "sub_category_name": subcategory.name if subcategory else "General"
+                }
+                
+                final_description = await generate_final_description(
+                    activity_details=activity_details,
+                    clarification_qa=[]  # Empty for auto-generation
+                )
+                logger.info(f"Generated AI final description for activity: {activity_name}")
+            except Exception as e:
+                logger.warning(f"Failed to generate AI description: {e}")
+                final_description = f"Auto-generated activity: {activity_name}"
+        
+        # Create the activity
+        db_activity = Activity(
+            name=activity_name,
+            description=activity_description,
+            category_id=category.id if category else None,
+            sub_category_id=subcategory.id if subcategory else None,
+            difficulty_level=getattr(DifficultyLevel, difficulty_level.upper(), DifficultyLevel.INTERMEDIATE),
+            access_type=getattr(AccessType, access_type.upper(), AccessType.PUBLIC),
+            created_by=current_user.id,
+            ai_guide=activity_data.get("ai_guide", True),
+            final_description=final_description
+        )
+        
+        db.add(db_activity)
+        db.commit()
+        db.refresh(db_activity)
+        
+        logger.info(f"Successfully created enhanced activity: {db_activity.id}")
+        logger.info(f"Category: {category.name if category else 'None'}")
+        logger.info(f"Subcategory: {subcategory.name if subcategory else 'None'}")
+        logger.info(f"Final description generated: {bool(final_description)}")
+        
+        return db_activity
+        
+    except Exception as e:
+        logger.error(f"Error creating enhanced activity: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while creating the enhanced activity: {str(e)}"
+        )

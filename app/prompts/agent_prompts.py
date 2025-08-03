@@ -75,13 +75,13 @@ INTENT_CLASSIFICATION_PROMPT = """Classify the user's intent into one of these c
 
 **Activity Management:**
 - list-activities: User wants to see/list available activities (e.g., "list activities", "show activities", "find activities")
-- create-activity: User wants to create a new activity
+- create-activity: User wants to create a new activity in the database (e.g., "create a quiz", "make an activity", "new activity")
 - edit-activity: User wants to modify an existing activity
 - delete-activity: User wants to remove an activity
 - start-activity: User wants to begin/start an activity
 
 **AI Learning:**
-- generate-activity: User wants to generate any activity (quiz, lesson, assignment, etc.) based on a description
+- generate-activity: User wants to generate content for an activity (e.g., "generate quiz questions", "create quiz content")
 - collaborative-learning: User wants comprehensive learning support with multiple specialized agents
 - single-agent-consultation: User wants to consult a specific specialized agent (tutor, subject_expert, exercise_designer, evaluator, learning_coach, visual_learning_specialist)
 - learning-support: General learning questions, study help, concept explanations
@@ -90,7 +90,12 @@ INTENT_CLASSIFICATION_PROMPT = """Classify the user's intent into one of these c
 - greetings: User is greeting the agent
 - capabilities: User asks what you can do
 
-**Important:** If the user mentions "list", "show", "find", "get", or "display" followed by "activities" or "activity", classify as "list-activities".
+**Important Guidelines:**
+- If the user says "create", "make", or "new" followed by "quiz", "activity", "lesson", etc., classify as "create-activity"
+- If the user says "generate" followed by content words, classify as "generate-activity"
+- If the user mentions "list", "show", "find", "get", or "display" followed by "activities" or "activity", classify as "list-activities"
+- "Create a Chemistry quiz" = create-activity (creates database entry)
+- "Generate quiz questions" = generate-activity (generates content)
 
 Return JSON with 'intent', 'confidence', and optionally 'target_agent' for single-agent-consultation.
 
