@@ -21,7 +21,7 @@ class EmbeddingStore(Base):
     entity_id = Column(UUID, nullable=False)  # Foreign key to original entity
     content_text = Column(Text, nullable=False)  # Text to be embedded
     embedding_vector = Column(JSON, nullable=False)  # Stored as JSON array
-    metadata = Column(JSON, nullable=False)  # Rich metadata for filtering
+    embedding_metadata = Column(JSON, nullable=False)  # Rich metadata for filtering
     embedding_model = Column(String(100), nullable=False)  # Model used for embedding
     embedding_dimension = Column(Integer, nullable=False)  # Dimension of embedding
     created_at = Column(DateTime, default=func.now())
@@ -49,10 +49,10 @@ class EmbeddingStore(Base):
     
     def get_metadata_value(self, key: str, default: Any = None) -> Any:
         """Get metadata value safely"""
-        return self.metadata.get(key, default) if self.metadata else default
+        return self.embedding_metadata.get(key, default) if self.embedding_metadata else default
     
     def set_metadata_value(self, key: str, value: Any) -> None:
         """Set metadata value safely"""
-        if not self.metadata:
-            self.metadata = {}
-        self.metadata[key] = value 
+        if not self.embedding_metadata:
+            self.embedding_metadata = {}
+        self.embedding_metadata[key] = value 

@@ -12,7 +12,7 @@ from app.config import load_azure_config
 from app.core.logger import get_logger
 from app.embeddings.models import EmbeddingStore
 from app.embeddings.extractors import extract_content_from_entity
-from langchain.embeddings import AzureOpenAIEmbeddings
+from langchain_openai import AzureOpenAIEmbeddings
 
 logger = get_logger(__name__)
 
@@ -30,7 +30,8 @@ class EmbeddingService:
                 openai_api_version=self.azure_config.api_version,
                 azure_deployment=self.azure_config.embedding_deployment or "text-embedding-ada-002",
                 azure_endpoint=self.azure_config.endpoint,
-                api_key=self.azure_config.api_key
+                api_key=self.azure_config.api_key,
+                chunk_size=1000  # Add the missing chunk_size parameter
             )
             self.embedding_dimension = 1536  # Default for text-embedding-ada-002
             logger.info("EmbeddingService initialized successfully")
@@ -87,7 +88,7 @@ class EmbeddingService:
             if existing_embedding:
                 existing_embedding.content_text = content_text
                 existing_embedding.embedding_vector = embedding_vector
-                existing_embedding.metadata = metadata
+                existing_embedding.embedding_metadata = metadata
                 existing_embedding.updated_at = datetime.now()
                 embedding_record = existing_embedding
                 logger.info(f"Updated embedding for {entity_type} {entity.id}")
@@ -97,7 +98,7 @@ class EmbeddingService:
                     entity_id=str(entity.id),
                     content_text=content_text,
                     embedding_vector=embedding_vector,
-                    metadata=metadata,
+                    embedding_metadata=metadata,
                     embedding_model=self.azure_config.embedding_deployment or "text-embedding-ada-002",
                     embedding_dimension=self.embedding_dimension
                 )
@@ -168,7 +169,7 @@ class EmbeddingService:
                         # Note: This is a simplified filter. For complex JSON queries,
                         # you might need to use PostgreSQL JSON operators
                         db_query = db_query.filter(
-                            EmbeddingStore.metadata.contains({key: value})
+                            EmbeddingStore.embedding_metadata.contains({key: value})
                         )
             
             # Get all embeddings

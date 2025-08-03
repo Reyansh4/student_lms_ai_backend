@@ -44,7 +44,7 @@ class SubCategoryResponse(BaseModel):
     id: UUID
     category_id: UUID
     name: str
-    description: str
+    description: Optional[str] = None
 
     class Config:
         from_attributes = True

@@ -6,7 +6,7 @@ import json
 import asyncio
 from typing import Dict, Any, List, Optional
 from langchain_openai import AzureChatOpenAI
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from app.config import load_azure_config
 from app.core.logger import get_logger
 from app.prompts.agent_prompts import *
@@ -37,6 +37,8 @@ class AgentTools:
             config = get_intent_classification_config()
             prompt = INTENT_CLASSIFICATION_PROMPT.format(user_input=user_input)
             
+            logger.debug(f"Classifying intent for: '{user_input}'")
+            
             response = await self._chat_completion(
                 prompt=prompt,
                 temperature=config["temperature"],
@@ -45,20 +47,50 @@ class AgentTools:
             )
             
             result = response.get("response", {})
+            logger.debug(f"AI classification response: {result}")
             
             # Fallback classification
             if "text" in result:
                 text = result["text"].lower()
                 intent = "unknown"
-                if any(w in text for w in ["hello","hi","hey"]): intent="greetings"
-                elif "what can you do" in text: intent="capabilities"
-                elif "start" in text: intent="start-activity"
-                elif any(w in text for w in ["help me learn", "teach me", "explain", "how to", "study", "practice"]): intent="learning-support"
-                elif any(w in text for w in ["tutor", "expert", "designer", "evaluator", "coach", "visual"]): intent="single-agent-consultation"
+                logger.debug(f"Using fallback classification for text: '{text}'")
+                
+                # Check for activity management keywords first
+                activity_keywords = ["activities", "activity"]
+                list_keywords = ["list", "show", "find", "get", "display", "see"]
+                
+                if any(list_word in text for list_word in list_keywords) and any(activity_word in text for activity_word in activity_keywords):
+                    intent = "list-activities"
+                    logger.debug("Detected list-activities intent in fallback")
+                elif any(w in text for w in ["create", "make", "new"]) and any(w in text for w in ["activities", "activity"]): 
+                    intent = "create-activity"
+                elif any(w in text for w in ["edit", "update", "modify"]) and any(w in text for w in ["activities", "activity"]): 
+                    intent = "edit-activity"
+                elif any(w in text for w in ["delete", "remove"]) and any(w in text for w in ["activities", "activity"]): 
+                    intent = "delete-activity"
+                elif "start" in text: 
+                    intent = "start-activity"
+                elif any(w in text for w in ["hello","hi","hey"]): 
+                    intent = "greetings"
+                elif "what can you do" in text: 
+                    intent = "capabilities"
+                elif any(w in text for w in ["help me learn", "teach me", "explain", "how to", "study", "practice"]): 
+                    intent = "learning-support"
+                elif any(w in text for w in ["tutor", "expert", "designer", "evaluator", "coach", "visual"]): 
+                    intent = "single-agent-consultation"
+                elif any(w in text for w in ["generate", "create", "make"]) and any(w in text for w in ["quiz", "lesson", "assignment", "exercise"]): 
+                    intent = "generate-activity"
+                elif any(w in text for w in ["collaborative", "multiple", "together", "team"]): 
+                    intent = "collaborative-learning"
+                
+                logger.debug(f"Fallback intent: {intent}")
                 result = {"intent": intent, "confidence": 0.5}
             
             intent = result.get("intent", "unknown").lower()
+            logger.debug(f"Final intent before validation: {intent}")
+            
             if not is_valid_intent(intent):
+                logger.debug(f"Intent '{intent}' is not valid, setting to unknown")
                 intent = "unknown"
             
             confidence = result.get("confidence", 0.0)
@@ -68,11 +100,13 @@ class AgentTools:
             if intent == "single-agent-consultation" and not target_agent:
                 target_agent = self._infer_target_agent(user_input)
             
-            return {
+            final_result = {
                 "intent": intent,
                 "confidence": confidence,
                 "target_agent": target_agent
             }
+            logger.debug(f"Final classification result: {final_result}")
+            return final_result
             
         except Exception as e:
             logger.error(f"Intent classification failed: {e}")
@@ -187,12 +221,16 @@ class AgentTools:
                 system_msg = {"role": "system", "content": "You MUST respond with valid JSON ONLY."}
                 messages = [system_msg] + messages
             
+            logger.debug(f"Sending messages to AI: {messages}")
             response = await self.client.ainvoke(messages)
             content = response.content.strip()
+            logger.debug(f"AI response content: {content}")
             
             try:
                 result = {"response": json.loads(content)}
-            except json.JSONDecodeError:
+                logger.debug(f"Successfully parsed JSON response: {result}")
+            except json.JSONDecodeError as e:
+                logger.debug(f"Failed to parse JSON, using text fallback: {e}")
                 result = {"response": {"text": content}}
             
             return result

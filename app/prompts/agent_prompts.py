@@ -72,17 +72,26 @@ Always use Mermaid syntax and ensure diagrams are clear and educational."""
 
 # Intent Classification Prompts
 INTENT_CLASSIFICATION_PROMPT = """Classify the user's intent into one of these categories:
-- create-activity
-- edit-activity
-- delete-activity
-- list-activities
-- start-activity: User wants to begin an activity
-- generate-activity: User wants to generate any activity (quiz, lesson, assignment, etc.) based on a description (including markdown)
+
+**Activity Management:**
+- list-activities: User wants to see/list available activities (e.g., "list activities", "show activities", "find activities")
+- create-activity: User wants to create a new activity
+- edit-activity: User wants to modify an existing activity
+- delete-activity: User wants to remove an activity
+- start-activity: User wants to begin/start an activity
+
+**AI Learning:**
+- generate-activity: User wants to generate any activity (quiz, lesson, assignment, etc.) based on a description
 - collaborative-learning: User wants comprehensive learning support with multiple specialized agents
 - single-agent-consultation: User wants to consult a specific specialized agent (tutor, subject_expert, exercise_designer, evaluator, learning_coach, visual_learning_specialist)
+- learning-support: General learning questions, study help, concept explanations
+
+**General:**
 - greetings: User is greeting the agent
 - capabilities: User asks what you can do
-- learning-support: General learning questions, study help, concept explanations
+
+**Important:** If the user mentions "list", "show", "find", "get", or "display" followed by "activities" or "activity", classify as "list-activities".
+
 Return JSON with 'intent', 'confidence', and optionally 'target_agent' for single-agent-consultation.
 
 User input: '{user_input}'"""

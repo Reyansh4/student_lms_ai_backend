@@ -347,7 +347,7 @@ class SemanticRetriever:
                 "entity_id": embedding.entity_id,
                 "content_text": embedding.content_text,
                 "similarity_score": round(similarity, 4),
-                "metadata": embedding.metadata,
+                "metadata": embedding.embedding_metadata,
                 "created_at": embedding.created_at.isoformat() if embedding.created_at else None
             }
             formatted_results.append(result)

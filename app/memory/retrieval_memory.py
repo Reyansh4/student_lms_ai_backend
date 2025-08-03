@@ -10,7 +10,7 @@ from app.memory.base_memory import BaseMemoryStrategy, MemoryMessage
 from app.core.logger import get_logger
 from app.config import load_azure_config
 from langchain_openai import AzureChatOpenAI
-from langchain.embeddings import AzureOpenAIEmbeddings
+from langchain_openai import AzureOpenAIEmbeddings
 
 logger = get_logger(__name__)
 
@@ -37,7 +37,8 @@ class RetrievalMemory(BaseMemoryStrategy):
                 openai_api_version=azure_config.api_version,
                 azure_deployment=azure_config.embedding_deployment or "text-embedding-ada-002",
                 azure_endpoint=azure_config.endpoint,
-                api_key=azure_config.api_key
+                api_key=azure_config.api_key,
+                chunk_size=1000  # Add the missing chunk_size parameter
             )
             logger.info(f"Initialized RetrievalMemory with k={k}, embedding_dim={embedding_dim}")
         except Exception as e:
