@@ -569,7 +569,7 @@ async def create_enhanced_activity(
         category_name = activity_data.get("category_name")
         subcategory_name = activity_data.get("subcategory_name")
         difficulty_level = activity_data.get("difficulty_level", "Intermediate")
-        access_type = activity_data.get("access_type", "public")
+        access_type = activity_data.get("access_type", "global")
         
         # Find or create category
         category = None
@@ -635,7 +635,7 @@ async def create_enhanced_activity(
             category_id=category.id if category else None,
             sub_category_id=subcategory.id if subcategory else None,
             difficulty_level=getattr(DifficultyLevel, difficulty_level.upper(), DifficultyLevel.INTERMEDIATE),
-            access_type=getattr(AccessType, access_type.upper(), AccessType.PUBLIC),
+            access_type=getattr(AccessType, access_type.upper(), AccessType.GLOBAL),
             created_by=current_user.id,
             ai_guide=activity_data.get("ai_guide", True),
             final_description=final_description

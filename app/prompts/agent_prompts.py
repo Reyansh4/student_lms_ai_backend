@@ -78,10 +78,9 @@ INTENT_CLASSIFICATION_PROMPT = """Classify the user's intent into one of these c
 - create-activity: User wants to create a new activity in the database (e.g., "create a quiz", "make an activity", "new activity")
 - edit-activity: User wants to modify an existing activity
 - delete-activity: User wants to remove an activity
-- start-activity: User wants to begin/start an activity
+- start-activity: User wants to begin/start an activity like generate quiz questions, create quiz content, etc.
 
 **AI Learning:**
-- generate-activity: User wants to generate content for an activity (e.g., "generate quiz questions", "create quiz content")
 - collaborative-learning: User wants comprehensive learning support with multiple specialized agents
 - single-agent-consultation: User wants to consult a specific specialized agent (tutor, subject_expert, exercise_designer, evaluator, learning_coach, visual_learning_specialist)
 - learning-support: General learning questions, study help, concept explanations

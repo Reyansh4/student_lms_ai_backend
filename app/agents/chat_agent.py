@@ -122,29 +122,45 @@ async def start_activity_tool(state: dict, config: dict) -> dict:
             ).first()
         
         if existing_activity:
-            # Start existing activity
+            # Start existing activity directly
             logger.debug(f"Found existing activity: {existing_activity.name}")
             
-            # Call the start-activity endpoint
-            url = f"{settings.SERVER_HOST}{settings.API_PREFIX}/agent/start-activity"
-            headers = {}
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
+            # Extract questions from existing activity content
+            from app.services.answer_evaluation import answer_evaluation_service
+            from app.models.activity_session import ActivitySession, SessionStatus
+            from app.models.user import User
             
-            activity_payload = {
-                "activity_name": existing_activity.name,
-                "category_name": existing_activity.category.name if existing_activity.category else "General"
-            }
+            # Get current user
+            current_user = db.query(User).filter(User.email == "user@example.com").first()
             
-            async with httpx.AsyncClient() as client:
-                response = await client.post(url, json=activity_payload, headers=headers, timeout=30)
-                response.raise_for_status()
-                result_data = response.json()
+            if current_user:
+                # Create activity session for tracking answers
+                activity_session = ActivitySession(
+                    activity_id=existing_activity.id,
+                    user_id=current_user.id,
+                    status=SessionStatus.IN_PROGRESS
+                )
                 
-                if result_data.get("status") == "started":
-                    return {"result": {"message": f"✅ Started existing activity: {existing_activity.name}"}}
-                else:
-                    return {"result": {"message": f"Activity '{existing_activity.name}' initiated. Check the response for details."}}
+                db.add(activity_session)
+                db.commit()
+                db.refresh(activity_session)
+                
+                return {"result": {"message": f"""✅ **Started Existing Activity Successfully!**
+
+**Activity Details:**
+- **Name:** {existing_activity.name}
+- **ID:** {existing_activity.id}
+- **Category:** {existing_activity.category.name if existing_activity.category else 'General'}
+- **Subcategory:** {existing_activity.sub_category.name if existing_activity.sub_category else 'General'}
+- **Difficulty:** {existing_activity.difficulty_level}
+- **Session ID:** {activity_session.id}
+
+**Description:**
+{existing_activity.final_description or 'No description available'}
+
+Your activity session has been created and is ready for answers! 🎉"""}}
+            else:
+                return {"result": {"message": f"✅ Started existing activity: {existing_activity.name}"}}
         
         else:
             # Generate new activity content and store in DB
@@ -286,10 +302,11 @@ async def learning_support_handler(state: dict, config: dict) -> dict:
             - intent: The specific action (list, create, edit, delete, start, search, filter)
             - category: The main subject category (extract the exact category name mentioned)
             - subcategory: The broader topic within the category (extract the exact subcategory name mentioned)
-            - activity_name: The specific activity name if mentioned
+            - activity_name: The specific activity name if mentioned or the topic of the activity if not mentioned
             - difficulty_level: Any difficulty level mentioned (beginner, intermediate, advanced) - if not mentioned, use "Intermediate"
             - filters: Any additional filters mentioned (by user, by date, by popularity, etc.)
             - description: Any description or requirements mentioned
+            - final_description: Any final description or requirements mentioned or conclusion of what the user wants to do from the prompt or any other information that is important for the activity
             
             **Guidelines:**
             - Extract the exact category and subcategory names as mentioned in the prompt
@@ -297,18 +314,19 @@ async def learning_support_handler(state: dict, config: dict) -> dict:
             - Subcategories are broader topics within each category like Trigonometry, Calculus, Refractive Index, Cell Biology, etc.
             - If no specific subcategory is mentioned, set subcategory to null
             - Preserve the exact spelling and case as mentioned in the prompt
-            - For "create" intents: Use "create" as the intent when user wants to make a new activity
-            - For "start" intents: Use "start" as the intent when user wants to begin an existing activity
-            - For "list" intents: Use "list" as the intent when user wants to see activities
+            - For "create" intents: Use "create-activity" as the intent when user wants to make a new activity
+            - For "start" intents: Use "start-activity" as the intent when user wants to begin an existing activity
+            - For "list" intents: Use "list-activities" as the intent when user wants to see activities
             - For difficulty_level: Use "Intermediate" as default if not specified
             
             **Examples:**
-            - "List all activities of Maths" → {{"intent": "list", "category": "Mathematics", "subcategory": null, "activity_name": null, "difficulty_level": "Intermediate", "filters": null, "description": null}}
-            - "Create a calculus quiz for beginners" → {{"intent": "create", "category": "Mathematics", "subcategory": "Calculus", "activity_name": "calculus quiz", "difficulty_level": "beginner", "filters": null, "description": "quiz for beginners"}}
-            - "Make a chemistry experiment" → {{"intent": "create", "category": "Chemistry", "subcategory": null, "activity_name": "chemistry experiment", "difficulty_level": "Intermediate", "filters": null, "description": null}}
-            - "Generate a physics quiz" → {{"intent": "create", "category": "Physics", "subcategory": null, "activity_name": "physics quiz", "difficulty_level": "Intermediate", "filters": null, "description": null}}
-            - "Create a Chemistry quiz on topic Hydrocarbon" → {{"intent": "create", "category": "Chemistry", "subcategory": "Hydrocarbon", "activity_name": "Chemistry quiz", "difficulty_level": "Intermediate", "filters": null, "description": "quiz on Hydrocarbon"}}
-            - "Start the algebra practice" → {{"intent": "start", "category": "Mathematics", "subcategory": "Algebra", "activity_name": "algebra practice", "difficulty_level": "Intermediate", "filters": null, "description": null}}
+            - "List all activities of Maths" → {{"intent": "list-activities", "category": "Mathematics", "subcategory": null, "activity_name": null, "difficulty_level": "Intermediate", "filters": null, "description": null}}
+            - "Create a calculus quiz for beginners" → {{"intent": "create-activity", "category": "Mathematics", "subcategory": "Calculus", "activity_name": "calculus quiz", "difficulty_level": "beginner", "filters": null, "description": "quiz for beginners"}}
+            - "Make a chemistry experiment" → {{"intent": "create-activity", "category": "Chemistry", "subcategory": null, "activity_name": "chemistry experiment", "difficulty_level": "Intermediate", "filters": null, "description": null}}
+            - "Generate a physics quiz" → {{"intent": "create-activity", "category": "Physics", "subcategory": null, "activity_name": "physics quiz", "difficulty_level": "Intermediate", "filters": null, "description": null}}
+            - "Create a Chemistry quiz on topic Hydrocarbon" → {{"intent": "create-activity", "category": "Chemistry", "subcategory": "Hydrocarbon", "activity_name": "Hydrocarbon quiz", "difficulty_level": "Intermediate", "filters": null, "description": "quiz on Hydrocarbon"}}
+            - "Start the algebra practice" → {{"intent": "start-activity", "category": "Mathematics", "subcategory": "Algebra", "activity_name": "algebra practice", "difficulty_level": "Intermediate", "filters": null, "description": null}}
+            - "Generate quiz questions for the activity" → {{"intent": "start-activity", "category": "Mathematics", "subcategory": "Algebra", "activity_name": "algebra practice", "difficulty_level": "Intermediate", "filters": null, "description": null}}
             
             Return only the JSON object:
             """
@@ -744,7 +762,6 @@ logger.info("Chat agent workflow compiled successfully")
 
 async def run_agent(input_data: dict) -> dict:
     """Run the chat agent with input data"""
-    print(f"=== RUN_AGENT START ===")
     print(f"Input data: {input_data}")
     
     user_id = input_data.get("user_id")

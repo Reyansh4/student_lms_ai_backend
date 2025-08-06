@@ -20,7 +20,6 @@ class ActivitySession(Base):
     completed_at = Column(DateTime)
     graded_at = Column(DateTime)
     graded_by = Column(UUID, ForeignKey("users.id"))
-    grade = Column(String(2))
     feedback = Column(String(500))
 
     # Relationships
