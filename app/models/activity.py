@@ -37,4 +37,7 @@ class Activity(Base):
     creator = relationship("User", foreign_keys=[created_by])
     questions = relationship("ActivityQuestion", back_populates="activity")
     sessions = relationship("ActivitySession", back_populates="activity")
-    documents = relationship("ActivityDocument", back_populates="activity") 
+    documents = relationship("ActivityDocument", back_populates="activity")
+    conversations = relationship("Conversation", back_populates="activity")
+    activity_chats = relationship("ActivityChat", back_populates="activity")
+    chat_messages = relationship("ChatMessage", back_populates="activity") 

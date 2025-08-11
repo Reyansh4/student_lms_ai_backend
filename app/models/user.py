@@ -26,4 +26,6 @@ class User(Base):
     activity_sessions = relationship("ActivitySession", back_populates="user", foreign_keys="ActivitySession.user_id", cascade="all, delete-orphan")
     graded_sessions = relationship("ActivitySession", back_populates="grader", foreign_keys="ActivitySession.graded_by", cascade="all, delete-orphan")
     activity_ai_responses = relationship("ActivityAIResponse", back_populates="user", foreign_keys="ActivityAIResponse.user_id", cascade="all, delete-orphan")
+    conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
+    chat_messages = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
     

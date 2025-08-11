@@ -5,6 +5,8 @@ from app.core.logger import get_logger
 from app.routes import api_router
 from app.db.base import Base
 from app.db.session import engine
+# Import all models to ensure they are registered with SQLAlchemy
+from app.db.models import *
 # Import agent router
 from app.agents.routers import router as agent_router
 from app.api.memory import router as memory_router

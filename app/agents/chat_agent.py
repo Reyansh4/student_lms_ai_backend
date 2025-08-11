@@ -768,13 +768,27 @@ async def run_agent(input_data: dict) -> dict:
     if not user_id:
         raise ValueError("user_id is required for session memory")
     
+    # Set database session for enhanced memory store
+    db = input_data.get("db")
+    if db:
+        enhanced_memory_store.set_db_session(db)
+    
     # Get or create an enhanced memory session
     session = enhanced_memory_store.get_or_create_session(user_id)
     prompt = input_data.get("prompt", "")
     
-    # Record the user turn
-    enhanced_memory_store.add_message(session.session_id, "user", prompt)
-    history = enhanced_memory_store.get_history(session.session_id)
+    # Record the user turn with conversation management
+    enhanced_memory_store.add_message(
+        session.session_id, 
+        "user", 
+        prompt, 
+        user_id=user_id,
+        intent=input_data.get("intent"),
+        topic=input_data.get("topic")
+    )
+    
+    # Get conversation memory (last 10 messages)
+    history = enhanced_memory_store.get_conversation_memory(session.session_id)
     messages = [{"role": m.role, "content": m.content} for m in history]
     
     state = {
@@ -790,7 +804,16 @@ async def run_agent(input_data: dict) -> dict:
     print(f"Agent workflow result: {result}")
     
     reply = result.get("result", {}).get("message", "")
-    enhanced_memory_store.add_message(session.session_id, "assistant", reply)
+    
+    # Record the assistant response with conversation management
+    enhanced_memory_store.add_message(
+        session.session_id, 
+        "assistant", 
+        reply, 
+        user_id=user_id,
+        intent=result.get("intent"),
+        topic=input_data.get("topic")
+    )
     
     # Extract intent from the workflow result - it should be preserved from classify_intent
     intent = result.get("intent", "unknown")
