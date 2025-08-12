@@ -16,55 +16,116 @@ from app.prompts.agent_prompts import (
     GREETING_RESPONSE,
     ACTIVITY_EXTRACTION_PROMPT
 )
+from app.agents.dynamic_intent_classifier import dynamic_intent_classifier
+from app.agents.dynamic_action_handlers import dynamic_action_handlers
 
 logger = get_logger(__name__)
 
 # Initialize LangGraph workflow
 workflow = StateGraph(dict)
 
-async def classify_intent(state: dict, config: dict) -> dict:
-    """Classify user intent using centralized tools"""
-    logger.info(f"=== CLASSIFY_INTENT START ===")
+async def classify_intent_with_context(state: dict, config: dict) -> dict:
+    """Dynamic intent classification using LLM + conversation context"""
+    logger.info(f"=== DYNAMIC_INTENT_CLASSIFICATION START ===")
     logger.info(f"Input state: {state}")
     
     prompt_text = state.get("prompt", "")
+    conversation_history = state.get("messages", [])
+    user_id = state.get("user_id")
+    
     logger.info(f"Prompt text: {prompt_text}")
+    logger.info(f"Conversation history length: {len(conversation_history)}")
     
     try:
-        # Use centralized intent classification
-        classification_result = await agent_tools.classify_intent(prompt_text)
-        logger.info(f"Classification result from agent_tools: {classification_result}")
+        # Get current activity context from conversation memory
+        current_activity = None
+        if user_id and conversation_history:
+            # Try to find active activity in recent messages
+            for msg in reversed(conversation_history):
+                if msg.get("role") == "assistant" and "Activity ID:" in msg.get("content", ""):
+                    # Extract activity ID from previous assistant message
+                    content = msg.get("content", "")
+                    if "Activity ID:" in content:
+                        # Simple extraction - could be enhanced
+                        current_activity = {"id": "extracted_id", "name": "Current Activity"}
+                        break
         
-        intent = classification_result.get("intent", "unknown")
+        # Use dynamic intent classifier with context
+        classification_result = await dynamic_intent_classifier.classify_intent_with_context(
+            prompt=prompt_text,
+            conversation_history=conversation_history,
+            current_activity=current_activity,
+            user_id=user_id
+        )
+        
+        logger.info(f"Dynamic classification result: {classification_result}")
+        
+        intent = classification_result.get("intent", "learning_support")
         confidence = classification_result.get("confidence", 0.0)
-        target_agent = classification_result.get("target_agent", None)
+        context_used = classification_result.get("context_used", "Context analysis completed")
         
         logger.info(f"Final intent: {intent}")
         logger.info(f"Confidence: {confidence}")
-        logger.info(f"Target agent: {target_agent}")
+        logger.info(f"Context used: {context_used}")
         
         # Preserve the original state while adding classification results
         output = {
             **state,  # Keep all original state
             "intent": intent, 
             "confidence": confidence, 
-            "target_agent": target_agent
+            "context_used": context_used,
+            "classification_context": classification_result
         }
         
         logger.info(f"Final output: {output}")
-        logger.info(f"=== CLASSIFY_INTENT SUCCESS ===")
+        logger.info(f"=== DYNAMIC_INTENT_CLASSIFICATION SUCCESS ===")
         return output
         
     except Exception as e:
-        logger.error(f"=== CLASSIFY_INTENT ERROR ===")
+        logger.error(f"=== DYNAMIC_INTENT_CLASSIFICATION ERROR ===")
         logger.error(f"Error details: {e}")
         return {
             **state,
-            "intent": "unknown",
+            "intent": "learning_support",
             "confidence": 0.0,
-            "target_agent": None
+            "context_used": f"Fallback due to error: {str(e)}",
+            "fallback": True
         }
 
+async def handle_dynamic_intent(state: dict, config: dict) -> dict:
+    """Handle any intent dynamically using the action handlers"""
+    logger.info(f"=== DYNAMIC_INTENT_HANDLER START ===")
+    logger.info(f"Input state: {state}")
+    
+    intent = state.get("intent", "learning_support")
+    classification_context = state.get("classification_context", {})
+    
+    logger.info(f"Handling dynamic intent: {intent}")
+    
+    try:
+        # Use dynamic action handlers
+        result = await dynamic_action_handlers.handle_intent(
+            intent=intent,
+            state=state,
+            context=classification_context
+        )
+        
+        logger.info(f"Dynamic intent handler result: {result}")
+        logger.info(f"=== DYNAMIC_INTENT_HANDLER SUCCESS ===")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"=== DYNAMIC_INTENT_HANDLER ERROR ===")
+        logger.error(f"Error details: {e}")
+        return {
+            "result": {
+                "error": f"Dynamic intent handling failed: {str(e)}",
+                "fallback": True
+            }
+        }
+
+# Keep existing handlers for backward compatibility
 async def greet_user(state: dict, config: dict) -> dict:
     """Handle greeting responses"""
     logger.debug(f"=== GREET_USER START ===")
@@ -710,13 +771,14 @@ async def provide_activity_guidance(categories_data: list, activities_data: list
 
 What would you like to do with activities?"""
 # Build workflow
-workflow.add_node("classify_intent", classify_intent)
+workflow.add_node("classify_intent", classify_intent_with_context)
 workflow.add_node("greet_user", greet_user)
 workflow.add_node("describe_capabilities", describe_capabilities)
 workflow.add_node("start_activity_tool", start_activity_tool)
 workflow.add_node("collaborative_learning_handler", collaborative_learning_handler)
 workflow.add_node("single_agent_consultation_handler", single_agent_consultation_handler)
 workflow.add_node("learning_support_handler", learning_support_handler)
+workflow.add_node("dynamic_intent_handler", handle_dynamic_intent)
 
 # Routing function
 def route_from_classify_intent(state):
@@ -726,23 +788,16 @@ def route_from_classify_intent(state):
     intent = state.get("intent")
     logger.info(f"Intent received: '{intent}'")
     
-    routing_map = {
-        "greetings": "greet_user",
-        "capabilities": "describe_capabilities",
-        "start-activity": "start_activity_tool",
-        "collaborative-learning": "collaborative_learning_handler",
-        "single-agent-consultation": "single_agent_consultation_handler",
-        "learning-support": "learning_support_handler",
-        "list-activities": "learning_support_handler",  # Route list-activities to learning support
-        "create-activity": "learning_support_handler",  # Route create-activity to learning support
-        "edit-activity": "learning_support_handler",    # Route edit-activity to learning support
-        "delete-activity": "learning_support_handler"   # Route delete-activity to learning support
-    }
+    # Special handling for greetings and capabilities
+    if intent == "greetings":
+        return "greet_user"
+    elif intent == "capabilities":
+        return "describe_capabilities"
     
-    # Handle AI learning intents only
-    route = routing_map.get(intent, "learning_support_handler")
-    logger.info(f"Routing intent '{intent}' to: {route}")
-    return route
+    # For all other intents, use the dynamic handler
+    # This allows the LLM to handle any intent naturally
+    logger.info(f"Routing intent '{intent}' to dynamic_intent_handler")
+    return "dynamic_intent_handler"
 
 workflow.add_conditional_edges("classify_intent", route_from_classify_intent)
 
@@ -751,7 +806,8 @@ workflow.set_entry_point("classify_intent")
 finish_nodes = [
     "greet_user", "describe_capabilities", "start_activity_tool",
     "collaborative_learning_handler", 
-    "single_agent_consultation_handler", "learning_support_handler"
+    "single_agent_consultation_handler", "learning_support_handler",
+    "dynamic_intent_handler"
 ]
 for node in finish_nodes:
     workflow.set_finish_point(node)
@@ -795,7 +851,8 @@ async def run_agent(input_data: dict) -> dict:
         "prompt": prompt,
         "details": input_data.get("details", {}),
         "db": input_data.get("db"),
-        "messages": messages
+        "messages": messages,
+        "user_id": user_id  # Pass user_id for context
     }
     print(f"Initial state: {state}")
     

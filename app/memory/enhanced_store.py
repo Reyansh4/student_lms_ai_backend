@@ -101,9 +101,17 @@ class EnhancedMemoryStore:
         name: Optional[str] = None,
     ) -> Session:
         """
-        Get or create a session for a user
+        Get or create a session for a user, maintaining continuity
         """
-        # For simplicity, always create a new session
+        # Check if user already has an active session
+        for session_id, session in self._sessions.items():
+            if session.user_id == user_id:
+                # Update session timestamp and return existing
+                session.updated_at = datetime.now()
+                logger.info(f"Reusing existing session {session_id} for user {user_id}")
+                return session
+        
+        # Create new session only if none exists
         session_id = str(uuid.uuid4())
         now = datetime.now()
         session = Session(
