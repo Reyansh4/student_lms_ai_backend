@@ -14,8 +14,7 @@ from functools import lru_cache
 from app.config import load_azure_config
 from openai import AsyncAzureOpenAI
 
-router = APIRouter(prefix="/memory", tags=["memory"])
-
+router = APIRouter(tags=["memory"])
 
 # Load Azure config & create a dedicated embeddings client once
 azure_config = load_azure_config()
@@ -146,3 +145,15 @@ async def search_messages(
 
     # 3) Return only the Message objects (dropping scores)
     return [msg for msg, score in sem_results]
+
+@router.get(
+    "/sessions",
+    response_model=List[SessionSchema],
+    summary="Get all sessions for the current user",
+)
+def get_user_sessions(
+    current_user: User = Depends(get_current_user),
+    store: InMemoryStore = Depends(get_store),
+):
+    """Get all chat sessions for the current user"""
+    return store.get_user_sessions(str(current_user.id))

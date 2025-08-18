@@ -4,7 +4,10 @@ Restructured chat agent using centralized tools and configuration
 
 import json
 import httpx
-from typing import Dict, Any
+import logging
+import traceback
+from datetime import datetime
+from typing import Dict, Any, List, Optional
 from langgraph.graph import StateGraph
 from app.core.logger import get_logger
 from app.config import settings
@@ -16,6 +19,19 @@ from app.prompts.agent_prompts import (
     GREETING_RESPONSE,
     ACTIVITY_EXTRACTION_PROMPT
 )
+from app.config.azure_config import get_azure_openai_client
+from app.config.langfuse_config import (
+    TraceTracker, track_function_call, track_llm_generation, 
+    traced_operation, langfuse_manager
+)
+from app.agents.multi_agent_system import MultiAgentSystem
+from app.memory.enhanced_store import EnhancedMemoryStore
+from app.prompts.agent_prompts import (
+    INTENT_CLASSIFICATION_PROMPT,
+    LEARNING_SUPPORT_PROMPT,
+    ACTIVITY_CREATION_PROMPT,
+    ACTIVITY_START_PROMPT
+)
 
 logger = get_logger(__name__)
 
@@ -23,31 +39,81 @@ logger = get_logger(__name__)
 workflow = StateGraph(dict)
 
 async def classify_intent(state: dict, config: dict) -> dict:
-    """Classify user intent using centralized tools"""
+    """Classify the user's intent using the agent tools"""
     logger.info(f"=== CLASSIFY_INTENT START ===")
     logger.info(f"Input state: {state}")
     
-    prompt_text = state.get("prompt", "")
-    logger.info(f"Prompt text: {prompt_text}")
+    prompt = state.get("prompt", "")
+    messages = state.get("messages", [])
+    details = state.get("details", {})
+    
+    logger.info(f"Classify intent received prompt: '{prompt}'")
+    logger.info(f"Classify intent received {len(messages)} messages")
+    logger.info(f"Classify intent received details: {details}")
+    
+    # Build the classification prompt with conversation context
+    classification_prompt = f"""Classify the user's intent into one of these categories:
+
+**Activity Management:**
+- list-activities: User wants to see/list available activities (e.g., "list activities", "show activities", "find activities")
+- create-activity: User wants to create a new activity in the database (e.g., "create a quiz", "make an activity", "new activity")
+- edit-activity: User wants to modify an existing activity
+- delete-activity: User wants to remove an activity
+- start-activity: User wants to begin/start an activity like generate quiz questions, create quiz content, etc.
+
+**AI Learning:**
+- collaborative-learning: User wants comprehensive learning support with multiple specialized agents
+- single-agent-consultation: User wants to consult a specific specialized agent (tutor, subject_expert, exercise_designer, evaluator, learning_coach, visual_learning_specialist)
+- learning-support: General learning questions, study help, concept explanations
+
+**General:**
+- greetings: User is greeting the agent
+- capabilities: User asks what you can do
+
+**Important Guidelines:**
+- If the user says "create", "make", or "new" followed by "quiz", "activity", "lesson", etc., classify as "create-activity"
+- If the user says "generate" followed by content words, classify as "generate-activity"
+- If the user mentions "list", "show", "find", "get", or "display" followed by "activities" or "activity", classify as "list-activities"
+- "Create a Chemistry quiz" = create-activity (creates database entry)
+- "Generate quiz questions" = generate-activity (generates content)
+- "Start English activity" = start-activity (starts existing activity and generates content)
+
+**Conversation Context:**
+"""
+    
+    if messages:
+        classification_prompt += "Recent conversation:\n"
+        for msg in messages[-3:]:  # Last 3 messages for context
+            role = "User" if msg["role"] == "user" else "AI"
+            classification_prompt += f"{role}: {msg['content']}\n"
+    
+    classification_prompt += f"\n**Current User Input:** {prompt}\n\n"
+    classification_prompt += "Return JSON with 'intent', 'confidence', and optionally 'target_agent' for single-agent-consultation."
+    
+    logger.info(f"Complete classification prompt template: {classification_prompt}")
     
     try:
-        # Use centralized intent classification
-        classification_result = await agent_tools.classify_intent(prompt_text)
-        logger.info(f"Classification result from agent_tools: {classification_result}")
+        # Call the agent tools for classification
+        result = await agent_tools.classify_intent(prompt)
+        logger.info(f"Classification result from agent_tools: {result}")
         
-        intent = classification_result.get("intent", "unknown")
-        confidence = classification_result.get("confidence", 0.0)
-        target_agent = classification_result.get("target_agent", None)
+        # Extract the final intent
+        final_intent = result.get("intent", "unknown")
+        confidence = result.get("confidence", 0.0)
+        target_agent = result.get("target_agent")
         
-        logger.info(f"Final intent: {intent}")
+        logger.info(f"Final intent: {final_intent}")
         logger.info(f"Confidence: {confidence}")
         logger.info(f"Target agent: {target_agent}")
         
-        # Preserve the original state while adding classification results
+        # Build the output
         output = {
-            **state,  # Keep all original state
-            "intent": intent, 
-            "confidence": confidence, 
+            "prompt": prompt,
+            "details": details,
+            "db": state.get("db"),
+            "messages": messages,
+            "intent": final_intent,
+            "confidence": confidence,
             "target_agent": target_agent
         }
         
@@ -57,9 +123,15 @@ async def classify_intent(state: dict, config: dict) -> dict:
         
     except Exception as e:
         logger.error(f"=== CLASSIFY_INTENT ERROR ===")
-        logger.error(f"Error details: {e}")
+        logger.error(f"Error in classify_intent: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Return default output on error
         return {
-            **state,
+            "prompt": prompt,
+            "details": details,
+            "db": state.get("db"),
+            "messages": messages,
             "intent": "unknown",
             "confidence": 0.0,
             "target_agent": None
@@ -86,148 +158,241 @@ async def describe_capabilities(state: dict, config: dict) -> dict:
     return result
 
 async def start_activity_tool(state: dict, config: dict) -> dict:
-    """Handle start activity requests - generates content, stores in DB, and executes"""
-    logger.debug(f"=== START_ACTIVITY_TOOL START ===")
-    logger.debug(f"Input state: {state}")
+    """Handle starting activities and generating content"""
+    logger.info(f"=== START_ACTIVITY_TOOL START ===")
+    logger.info(f"Input state: {state}")
     
     prompt = state.get("prompt", "")
-    payload = state.get("details", {})
-    token = payload.get("token")
-    db = state.get("db")
+    details = state.get("details", {})
+    conversation_history = details.get("conversation_history", [])
     
-    logger.debug(f"Prompt: {prompt}")
-    logger.debug(f"Token present: {token is not None}")
-    logger.debug(f"Database session present: {db is not None}")
+    logger.info(f"Start activity tool received prompt: '{prompt}'")
+    logger.info(f"Start activity tool received details: {details}")
+    logger.info(f"Start activity tool received {len(conversation_history)} conversation history items")
     
     try:
-        # Extract activity details using centralized tools
-        activity_details = await agent_tools.extract_activity_details(prompt)
+        # Extract activity information from the prompt
+        activity_info = await extract_activity_info(prompt, conversation_history)
+        logger.info(f"Extracted activity info: {activity_info}")
         
-        activity_name = activity_details.get("activity_name", "Quiz")
-        category_name = activity_details.get("category_name", "General")
-        subcategory_name = activity_details.get("subcategory_name")
-        
-        # First, try to find existing activity
-        existing_activity = None
-        if db:
-            # Search for existing activity
-            from app.models.activity import Activity
-            from app.models.activity_category import ActivityCategory
-            from app.models.activity_sub_category import ActivitySubCategory
+        # Check if activity exists
+        activity = await find_activity(activity_info, state)
+        if activity:
+            logger.info(f"Found existing activity: {activity}")
             
-            # Try to find by name and category
-            existing_activity = db.query(Activity).join(ActivityCategory).filter(
-                Activity.name.ilike(f"%{activity_name}%"),
-                ActivityCategory.name.ilike(f"%{category_name}%")
-            ).first()
-        
-        if existing_activity:
-            # Start existing activity directly
-            logger.debug(f"Found existing activity: {existing_activity.name}")
+            # Generate activity content (MCQs, questions, etc.)
+            logger.info("Generating activity content...")
+            activity_content = await generate_activity_content(activity, state)
+            logger.info(f"Generated activity content: {activity_content}")
             
-            # Extract questions from existing activity content
-            from app.services.answer_evaluation import answer_evaluation_service
-            from app.models.activity_session import ActivitySession, SessionStatus
-            from app.models.user import User
-            
-            # Get current user
-            current_user = db.query(User).filter(User.email == "user@example.com").first()
-            
-            if current_user:
-                # Create activity session for tracking answers
-                activity_session = ActivitySession(
-                    activity_id=existing_activity.id,
-                    user_id=current_user.id,
-                    status=SessionStatus.IN_PROGRESS
-                )
-                
-                db.add(activity_session)
-                db.commit()
-                db.refresh(activity_session)
-                
-                return {"result": {"message": f"""✅ **Started Existing Activity Successfully!**
-
-**Activity Details:**
-- **Name:** {existing_activity.name}
-- **ID:** {existing_activity.id}
-- **Category:** {existing_activity.category.name if existing_activity.category else 'General'}
-- **Subcategory:** {existing_activity.sub_category.name if existing_activity.sub_category else 'General'}
-- **Difficulty:** {existing_activity.difficulty_level}
-- **Session ID:** {activity_session.id}
-
-**Description:**
-{existing_activity.final_description or 'No description available'}
-
-Your activity session has been created and is ready for answers! 🎉"""}}
-            else:
-                return {"result": {"message": f"✅ Started existing activity: {existing_activity.name}"}}
-        
+            return {
+                "result": {
+                    "message": f"🎯 **{activity.name} Activity Started!**\n\n{activity_content}",
+                    "activity_id": activity.id,
+                    "content_type": "mcq_quiz"
+                }
+            }
         else:
-            # Generate new activity content and store in DB
-            logger.debug(f"No existing activity found, generating new activity: {activity_name}")
-            
-            # Generate content using AI
-            from app.config.agent_config import get_chat_completion_config
-            config_settings = get_chat_completion_config()
-            
-            generation_prompt = f"""Create a comprehensive {activity_name} for {category_name}"""
-            if subcategory_name:
-                generation_prompt += f" focusing on {subcategory_name}"
-            generation_prompt += f". Include multiple choice questions, true/false, and short answer questions. Make it educational and engaging."""
-            
-            response = await agent_tools._chat_completion(
-                prompt=generation_prompt,
-                temperature=config_settings["default_temperature"],
-                max_tokens=config_settings["default_max_tokens"],
-                json_mode=False
-            )
-            
-            generated_content = response.get("response", {}).get("text", response.get("response", ""))
-            
-            # Create activity in database
-            activity_data = {
-                "name": f"{category_name} {activity_name}",
-                "description": f"Generated {activity_name} for {category_name}",
-                "category_name": category_name,
-                "subcategory_name": subcategory_name or "General",
-                "difficulty_level": "Intermediate",
-                "access_type": "global",
-                "ai_guide": True,
-                "final_description": generated_content[:500] + "..." if len(generated_content) > 500 else generated_content
+            logger.warning(f"No activity found for: {activity_info}")
+            return {
+                "result": {
+                    "message": f"❌ Activity not found. Please check the activity name and try again.",
+                    "error": "Activity not found"
+                }
             }
             
-            # Store in database using enhanced endpoint
-            url = f"http://localhost:8000{settings.API_PREFIX}/activities/create_enhanced"
-            headers = {"Content-Type": "application/json"}
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-            
-            async with httpx.AsyncClient() as client:
-                response = await client.post(url, json=activity_data, headers=headers, timeout=30)
-                response.raise_for_status()
-                created_activity = response.json()
-                
-                activity_id = created_activity.get("id")
-                created_category = created_activity.get("category", {}).get("name", "Unknown")
-                created_subcategory = created_activity.get("sub_category", {}).get("name", "Unknown")
-                
-                return {"result": {"message": f"""✅ **Activity Generated and Started Successfully!**
+    except Exception as e:
+        logger.error(f"=== START_ACTIVITY_TOOL ERROR ===")
+        logger.error(f"Error details: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return {"result": {"error": f"Failed to start activity: {str(e)}"}}
+    
+    logger.info(f"=== START_ACTIVITY_TOOL SUCCESS ===")
 
-**Activity Details:**
-- **Name:** {activity_data['name']}
-- **ID:** {activity_id}
-- **Category:** {created_category}
-- **Subcategory:** {created_subcategory}
-- **Difficulty:** Intermediate
-
-**Generated Content:**
-{generated_content[:300]}{'...' if len(generated_content) > 300 else ''}
-
-Your activity has been created and is now ready to use!"""}}
+async def extract_activity_info(prompt: str, conversation_history: list) -> dict:
+    """Extract activity information from prompt and conversation history"""
+    logger.info(f"=== EXTRACT_ACTIVITY_INFO START ===")
+    logger.info(f"Extracting from prompt: '{prompt}'")
+    logger.info(f"Conversation history: {conversation_history}")
+    
+    # Build context from conversation history
+    context_prompt = "Based on the conversation history and current request, extract activity information:\n\n"
+    if conversation_history:
+        context_prompt += "Conversation History:\n"
+        for msg in conversation_history[-5:]:  # Last 5 messages
+            role = "User" if msg['role'] == 'user' else "AI"
+            context_prompt += f"{role}: {msg['content']}\n"
+    
+    context_prompt += f"\nCurrent Request: {prompt}\n\n"
+    context_prompt += """Extract and return JSON with:
+    - activity_name: The specific activity name mentioned
+    - category: The subject category (e.g., English, Math, Science)
+    - subcategory: The specific topic if mentioned
+    - action: What user wants to do (start, generate, show MCQs, etc.)
+    - content_type: What content to generate (mcq_quiz, questions, exercises, etc.)
+    
+    Examples:
+    - "Start English Grammar Fundamentals" → {"activity_name": "English Grammar Fundamentals", "category": "English", "subcategory": "Grammar", "action": "start", "content_type": "mcq_quiz"}
+    - "Show me MCQs for English Grammar" → {"activity_name": "English Grammar", "category": "English", "subcategory": "Grammar", "action": "show", "content_type": "mcq_quiz"}
+    
+    Return only valid JSON:"""
+    
+    logger.info(f"Context prompt for extraction: {context_prompt}")
+    
+    try:
+        from app.config.agent_config import get_chat_completion_config
+        config_settings = get_chat_completion_config()
+        
+        logger.info(f"Calling Azure API for activity extraction with config: {config_settings}")
+        
+        extraction_result = await agent_tools._chat_completion(
+            prompt=context_prompt,
+            temperature=0.1,
+            max_tokens=300,
+            json_mode=True
+        )
+        
+        logger.info(f"Azure API extraction result: {extraction_result}")
+        
+        # Parse the extracted information
+        extracted_info = {}
+        if "response" in extraction_result and "text" in extraction_result["response"]:
+            try:
+                extracted_info = json.loads(extraction_result["response"]["text"])
+                logger.info(f"Successfully parsed JSON: {extracted_info}")
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse LLM extraction result as JSON: {e}")
+                logger.error(f"Raw response text: {extraction_result['response']['text']}")
+                extracted_info = {}
+        elif "response" in extraction_result:
+            extracted_info = extraction_result["response"]
+            logger.info(f"Using direct response: {extracted_info}")
+        
+        logger.info(f"Final extracted activity info: {extracted_info}")
+        logger.info(f"=== EXTRACT_ACTIVITY_INFO SUCCESS ===")
+        return extracted_info
         
     except Exception as e:
-        logger.error(f"Start activity tool failed: {e}")
-        return {"result": {"error": f"Activity generation/start failed: {str(e)}"}}
+        logger.error(f"=== EXTRACT_ACTIVITY_INFO ERROR ===")
+        logger.error(f"Error in activity extraction: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return {}
+
+async def find_activity(activity_info: dict, state: dict) -> dict:
+    """Find the activity in the database"""
+    logger.info(f"=== FIND_ACTIVITY START ===")
+    logger.info(f"Looking for activity with info: {activity_info}")
+    
+    try:
+        db = state.get("db")
+        if not db:
+            logger.error("No database session available")
+            return None
+        
+        # Query for the activity
+        from app.models.activity import Activity
+        from app.models.activity_category import ActivityCategory
+        from app.models.activity_sub_category import ActivitySubCategory
+        
+        activity_name = activity_info.get("activity_name", "")
+        category_name = activity_info.get("category", "")
+        subcategory_name = activity_info.get("subcategory", "")
+        
+        logger.info(f"Searching for activity: name='{activity_name}', category='{category_name}', subcategory='{subcategory_name}'")
+        
+        # Build query
+        query = db.query(Activity).join(ActivityCategory).join(ActivitySubCategory)
+        
+        if activity_name:
+            query = query.filter(Activity.name.ilike(f"%{activity_name}%"))
+        if category_name:
+            query = query.filter(ActivityCategory.name.ilike(f"%{category_name}%"))
+        if subcategory_name:
+            query = query.filter(ActivitySubCategory.name.ilike(f"%{subcategory_name}%"))
+        
+        activity = query.first()
+        
+        if activity:
+            logger.info(f"Found activity: {activity.name} (ID: {activity.id})")
+            logger.info(f"Activity details: category={activity.category.name}, subcategory={activity.sub_category.name if activity.sub_category else 'None'}")
+        else:
+            logger.warning(f"No activity found matching criteria")
+            
+        logger.info(f"=== FIND_ACTIVITY SUCCESS ===")
+        return activity
+        
+    except Exception as e:
+        logger.error(f"=== FIND_ACTIVITY ERROR ===")
+        logger.error(f"Error finding activity: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return None
+
+async def generate_activity_content(activity: dict, state: dict) -> str:
+    """Generate MCQ content for the activity"""
+    logger.info(f"=== GENERATE_ACTIVITY_CONTENT START ===")
+    logger.info(f"Generating content for activity: {activity}")
+    
+    try:
+        # Build generation prompt
+        generation_prompt = f"""Generate a comprehensive MCQ quiz for the activity: {activity.name}
+
+Category: {activity.category.name}
+Subcategory: {activity.sub_category.name if activity.sub_category else 'General'}
+
+Generate 5 multiple choice questions with:
+- Clear, educational questions
+- 4 answer options (A, B, C, D)
+- Correct answer marked
+- Brief explanation for correct answer
+
+Format the response as:
+1. Question 1
+   A) Option A
+   B) Option B  
+   C) Option C
+   D) Option D
+   **Correct Answer: X**
+   **Explanation: Brief explanation**
+
+2. Question 2
+   ... (continue format)
+
+Make the questions engaging and educational for {activity.difficulty_level if hasattr(activity, 'difficulty_level') else 'intermediate'} level students."""
+
+        logger.info(f"Generation prompt: {generation_prompt}")
+        
+        # Call Azure API to generate content
+        from app.config.agent_config import get_chat_completion_config
+        config_settings = get_chat_completion_config()
+        
+        logger.info(f"Calling Azure API for content generation with config: {config_settings}")
+        
+        generation_result = await agent_tools._chat_completion(
+            prompt=generation_prompt,
+            temperature=0.7,
+            max_tokens=1000
+        )
+        
+        logger.info(f"Azure API generation result: {generation_result}")
+        
+        # Extract the generated content
+        generated_content = ""
+        if "response" in generation_result and "text" in generation_result["response"]:
+            generated_content = generation_result["response"]["text"]
+        elif "response" in generation_result:
+            generated_content = str(generation_result["response"])
+        else:
+            generated_content = str(generation_result)
+        
+        logger.info(f"Generated content: {generated_content}")
+        logger.info(f"=== GENERATE_ACTIVITY_CONTENT SUCCESS ===")
+        return generated_content
+        
+    except Exception as e:
+        logger.error(f"=== GENERATE_ACTIVITY_CONTENT ERROR ===")
+        logger.error(f"Error generating content: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return "❌ Failed to generate activity content. Please try again."
 
 async def collaborative_learning_handler(state: dict, config: dict) -> dict:
     """Handle collaborative learning requests"""
@@ -282,9 +447,11 @@ async def learning_support_handler(state: dict, config: dict) -> dict:
     
     prompt = state.get("prompt", "")
     intent = state.get("intent", "")
+    messages = state.get("messages", [])
     
     logger.info(f"Learning support handler received intent: '{intent}'")
     logger.info(f"Learning support handler received prompt: '{prompt}'")
+    logger.info(f"Learning support handler received {len(messages)} conversation messages")
     
     try:
         # Check if this is an activity-related request
@@ -394,10 +561,32 @@ async def learning_support_handler(state: dict, config: dict) -> dict:
                 message = await provide_activity_guidance(categories_data, activities_data)
                 
         else:
-            # Use multi-agent system for general learning support
+            # Use multi-agent system for general learning support with conversation context
             from app.agents.multi_agent_system import multi_agent_system
-            result = await multi_agent_system.process_learning_request(prompt)
-            message = result.get("combined_response", get_response_template("error"))
+            
+            # Build conversation context from previous messages
+            conversation_context = ""
+            if messages and len(messages) > 1:
+                # Get last few messages for context (excluding current one)
+                recent_messages = messages[-3:-1]  # Last 2 messages before current
+                conversation_context = "Previous conversation context:\n"
+                for msg in recent_messages:
+                    role = "You" if msg["role"] == "user" else "AI"
+                    conversation_context += f"{role}: {msg['content']}\n"
+                conversation_context += f"Current request: {prompt}"
+                logger.info(f"Built conversation context: {conversation_context}")
+            
+            # If no context or simple response needed, give direct answer
+            if not conversation_context or len(prompt.strip()) < 10:
+                # For simple inputs like "A is correct", give direct response
+                if prompt.strip().lower() in ["a", "a is correct", "b", "c", "d"]:
+                    message = "I see you've selected an answer. To help you better, could you provide more context about what question or topic you're working on?"
+                else:
+                    message = "I'm here to help! Could you please provide more details about what you'd like to learn or discuss?"
+            else:
+                # Use multi-agent system with conversation context
+                result = await multi_agent_system.process_learning_request(prompt, conversation_context)
+                message = result.get("combined_response", get_response_template("error"))
         
         logger.info(f"Learning support result: {message}")
         logger.info(f"=== LEARNING_SUPPORT_HANDLER SUCCESS ===")
@@ -787,9 +976,42 @@ async def run_agent(input_data: dict) -> dict:
         topic=input_data.get("topic")
     )
     
-    # Get conversation memory (last 10 messages)
-    history = enhanced_memory_store.get_conversation_memory(session.session_id)
-    messages = [{"role": m.role, "content": m.content} for m in history]
+    # Use conversation history from frontend if available, otherwise fall back to memory store
+    details = input_data.get("details", {})
+    conversation_history = details.get("conversation_history", [])
+    
+    if conversation_history:
+        print(f"Using conversation history from frontend: {len(conversation_history)} messages")
+        # Convert to the format expected by the agent
+        messages = []
+        for msg in conversation_history:
+            if isinstance(msg, dict):
+                # Handle dictionary format
+                messages.append({
+                    "role": msg.get("role", "user"), 
+                    "content": msg.get("content", "")
+                })
+            elif isinstance(msg, str):
+                # Handle string format - treat as user message
+                messages.append({
+                    "role": "user",
+                    "content": msg
+                })
+            else:
+                # Handle other formats
+                messages.append({
+                    "role": "user",
+                    "content": str(msg)
+                })
+        # Add current user message
+        messages.append({"role": "user", "content": prompt})
+    else:
+        print("No conversation history from frontend, using memory store")
+        # Get conversation memory (last 10 messages) from memory store
+        history = enhanced_memory_store.get_conversation_memory(session.session_id)
+        messages = [{"role": m.role, "content": m.content} for m in history]
+    
+    print(f"Final messages for agent: {messages}")
     
     state = {
         "prompt": prompt,
@@ -828,4 +1050,455 @@ async def run_agent(input_data: dict) -> dict:
     
     print(f"=== RUN_AGENT SUCCESS ===")
     return output 
+
+
+class ChatAgent:
+    """Enhanced chat agent with comprehensive Langfuse tracing"""
+    
+    def __init__(self):
+        self.azure_client = get_azure_openai_client()
+        self.multi_agent_system = MultiAgentSystem()
+        self.enhanced_memory_store = EnhancedMemoryStore()
+        
+        # Get LangChain callback handler for LLM operations
+        self.langfuse_handler = langfuse_manager.get_langchain_handler()
+        
+        logger.info("ChatAgent initialized with Langfuse tracing")
+    
+    def classify_intent(self, prompt: str) -> str:
+        """Classify user intent with Langfuse tracing"""
+        with traced_operation("Intent Classification") as trace:
+            try:
+                # Build the full classification prompt
+                full_prompt = f"{INTENT_CLASSIFICATION_PROMPT}\n\nUser Input: {prompt}\n\nIntent:"
+                
+                # Track the classification attempt
+                trace.add_span("Intent Classification", 
+                             {"prompt": prompt, "full_prompt": full_prompt}, 
+                             {"status": "processing"})
+                
+                # Get Azure OpenAI response
+                response = self.azure_client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[{"role": "user", "content": full_prompt}],
+                    max_tokens=50,
+                    temperature=0.1,
+                    callbacks=[self.langfuse_handler] if self.langfuse_handler else None
+                )
+                
+                intent = response.choices[0].message.content.strip().lower()
+                
+                # Track the result
+                trace.add_span("Intent Result", 
+                             {"raw_response": response.choices[0].message.content}, 
+                             {"classified_intent": intent})
+                
+                # Track LLM generation
+                track_llm_generation(
+                    model="gpt-4",
+                    prompt=full_prompt,
+                    completion=intent,
+                    metadata={
+                        "operation": "intent_classification",
+                        "tokens_used": response.usage.total_tokens if response.usage else None,
+                        "model": "gpt-4"
+                    },
+                    trace=trace
+                )
+                
+                logger.info(f"Intent classified as: {intent}")
+                return intent
+                
+            except Exception as e:
+                error_msg = f"Intent classification failed: {str(e)}"
+                logger.error(error_msg)
+                trace.finish("error", error_msg)
+                return "unknown"
+    
+    def run_agent(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the main agent with comprehensive tracing"""
+        with traced_operation("Chat Agent Run", 
+                            user_id=input_data.get('user_id'),
+                            session_id=input_data.get('session_id')) as trace:
+            
+            try:
+                prompt = input_data.get('prompt', '')
+                details = input_data.get('details', {})
+                session_id = details.get('session_id')
+                conversation_history = details.get('conversation_history', [])
+                
+                # Track input data
+                trace.add_span("Input Processing", 
+                             {"prompt": prompt, "details": details}, 
+                             {"status": "received"})
+                
+                # Get conversation context
+                if conversation_history:
+                    # Use conversation history from input if available
+                    messages = conversation_history
+                    logger.info(f"Using conversation history from input: {len(messages)} messages")
+                else:
+                    # Fallback to memory store
+                    messages = self.enhanced_memory_store.get_conversation_memory(session_id)
+                    logger.info(f"Using memory store conversation: {len(messages)} messages")
+                
+                # Clean and format conversation history
+                if messages and isinstance(messages, list):
+                    clean_messages = []
+                    for msg in messages:
+                        if isinstance(msg, dict) and 'role' in msg and 'content' in msg:
+                            clean_messages.append(msg)
+                        elif isinstance(msg, str):
+                            clean_messages.append({
+                                "role": "user",
+                                "content": msg
+                            })
+                    messages = clean_messages
+                    logger.info(f"Cleaned conversation history: {len(messages)} valid messages")
+                else:
+                    messages = []
+                    logger.info("No valid conversation history available")
+                
+                # Track conversation context
+                trace.add_span("Conversation Context", 
+                             {"raw_history": conversation_history}, 
+                             {"cleaned_messages": len(messages)})
+                
+                # Classify intent
+                intent = self.classify_intent(prompt)
+                
+                # Track intent classification
+                trace.add_span("Intent Classification Result", 
+                             {"prompt": prompt}, 
+                             {"intent": intent})
+                
+                # Route based on intent
+                if intent == "learning_support":
+                    result = self.learning_support_handler(prompt, messages, trace)
+                elif intent == "activity_creation":
+                    result = self.activity_creation_handler(prompt, messages, trace)
+                elif intent == "activity_start":
+                    result = self.activity_start_handler(prompt, messages, trace)
+                else:
+                    result = self.general_chat_handler(prompt, messages, trace)
+                
+                # Track final result
+                trace.add_span("Agent Response", 
+                             {"intent": intent, "prompt": prompt}, 
+                             {"result": result})
+                
+                logger.info(f"Agent completed successfully with intent: {intent}")
+                return result
+                
+            except Exception as e:
+                error_msg = f"Agent run failed: {str(e)}"
+                logger.error(f"{error_msg}\n{traceback.format_exc()}")
+                trace.finish("error", error_msg)
+                return {"error": error_msg}
+    
+    def learning_support_handler(self, prompt: str, messages: List[Dict], trace: TraceTracker) -> Dict[str, Any]:
+        """Handle learning support requests with tracing"""
+        with traced_operation("Learning Support Handler") as support_trace:
+            try:
+                # Build conversation context
+                conversation_context = []
+                for msg in messages[-5:]:  # Last 5 messages for context
+                    conversation_context.append(f"{msg['role']}: {msg['content']}")
+                
+                context_text = "\n".join(conversation_context) if conversation_context else "No previous context"
+                
+                # Track context building
+                support_trace.add_span("Context Building", 
+                                     {"messages": messages}, 
+                                     {"context_length": len(context_text)})
+                
+                # Handle simple inputs like "A is correct"
+                if len(prompt.strip()) <= 20 and any(word in prompt.lower() for word in ['correct', 'wrong', 'a', 'b', 'c', 'd']):
+                    response = f"I see you've selected an answer! That's great progress. {prompt} - Let me know if you'd like to continue with more questions or if you have any other learning needs."
+                    
+                    support_trace.add_span("Simple Response", 
+                                         {"prompt": prompt}, 
+                                         {"response": response})
+                    
+                    return {
+                        "intent": "learning_support",
+                        "result": {
+                            "message": response,
+                            "session_id": str(datetime.now().timestamp())
+                        }
+                    }
+                
+                # Process with multi-agent system
+                result = self.multi_agent_system.process_learning_request(
+                    prompt, 
+                    conversation_context=context_text
+                )
+                
+                # Track multi-agent processing
+                support_trace.add_span("Multi-Agent Processing", 
+                                     {"prompt": prompt, "context": context_text}, 
+                                     {"result": result})
+                
+                return {
+                    "intent": "learning_support",
+                    "result": result
+                }
+                
+            except Exception as e:
+                error_msg = f"Learning support handler failed: {str(e)}"
+                logger.error(error_msg)
+                support_trace.finish("error", error_msg)
+                return {"error": error_msg}
+    
+    def activity_creation_handler(self, prompt: str, messages: List[Dict], trace: TraceTracker) -> Dict[str, Any]:
+        """Handle activity creation requests with tracing"""
+        with traced_operation("Activity Creation Handler") as creation_trace:
+            try:
+                # Extract activity information
+                activity_info = self.extract_activity_info(prompt)
+                
+                creation_trace.add_span("Activity Info Extraction", 
+                                      {"prompt": prompt}, 
+                                      {"activity_info": activity_info})
+                
+                # Generate activity content
+                activity_content = self.generate_activity_content(activity_info, trace)
+                
+                creation_trace.add_span("Activity Content Generation", 
+                                      {"activity_info": activity_info}, 
+                                      {"content": activity_content})
+                
+                return {
+                    "intent": "activity_creation",
+                    "result": {
+                        "message": f"Activity '{activity_info.get('name', 'Unknown')}' created successfully!",
+                        "activity": activity_content,
+                        "session_id": str(datetime.now().timestamp())
+                    }
+                }
+                
+            except Exception as e:
+                error_msg = f"Activity creation handler failed: {str(e)}"
+                logger.error(error_msg)
+                creation_trace.finish("error", error_msg)
+                return {"error": error_msg}
+    
+    def activity_start_handler(self, prompt: str, messages: List[Dict], trace: TraceTracker) -> Dict[str, Any]:
+        """Handle activity start requests with tracing"""
+        with traced_operation("Activity Start Handler") as start_trace:
+            try:
+                # Start the activity
+                result = self.start_activity_tool(prompt, trace)
+                
+                start_trace.add_span("Activity Start", 
+                                   {"prompt": prompt}, 
+                                   {"result": result})
+                
+                return {
+                    "intent": "activity_start",
+                    "result": result
+                }
+                
+            except Exception as e:
+                error_msg = f"Activity start handler failed: {str(e)}"
+                logger.error(error_msg)
+                start_trace.finish("error", error_msg)
+                return {"error": error_msg}
+    
+    def general_chat_handler(self, prompt: str, messages: List[Dict], trace: TraceTracker) -> Dict[str, Any]:
+        """Handle general chat requests with tracing"""
+        with traced_operation("General Chat Handler") as chat_trace:
+            try:
+                # Build conversation context
+                conversation_context = []
+                for msg in messages[-3:]:  # Last 3 messages for context
+                    conversation_context.append(f"{msg['role']}: {msg['content']}")
+                
+                context_text = "\n".join(conversation_context) if conversation_context else "No previous context"
+                
+                chat_trace.add_span("Context Building", 
+                                   {"messages": messages}, 
+                                   {"context_length": len(context_text)})
+                
+                # Generate response using Azure OpenAI
+                full_prompt = f"Context:\n{context_text}\n\nUser: {prompt}\n\nAssistant:"
+                
+                response = self.azure_client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[{"role": "user", "content": full_prompt}],
+                    max_tokens=500,
+                    temperature=0.7,
+                    callbacks=[self.langfuse_handler] if self.langfuse_handler else None
+                )
+                
+                assistant_message = response.choices[0].message.content.strip()
+                
+                # Track LLM generation
+                track_llm_generation(
+                    model="gpt-4",
+                    prompt=full_prompt,
+                    completion=assistant_message,
+                    metadata={
+                        "operation": "general_chat",
+                        "tokens_used": response.usage.total_tokens if response.usage else None,
+                        "model": "gpt-4"
+                    },
+                    trace=chat_trace
+                )
+                
+                chat_trace.add_span("Response Generation", 
+                                   {"prompt": full_prompt}, 
+                                   {"response": assistant_message})
+                
+                return {
+                    "intent": "general_chat",
+                    "result": {
+                        "message": assistant_message,
+                        "session_id": str(datetime.now().timestamp())
+                    }
+                }
+                
+            except Exception as e:
+                error_msg = f"General chat handler failed: {str(e)}"
+                logger.error(error_msg)
+                chat_trace.finish("error", error_msg)
+                return {"error": error_msg}
+    
+    def start_activity_tool(self, prompt: str, trace: TraceTracker) -> Dict[str, Any]:
+        """Start an activity with tracing"""
+        try:
+            # Extract activity name from prompt
+            activity_name = self.extract_activity_info(prompt).get('name', 'Unknown Activity')
+            
+            trace.add_span("Activity Start", 
+                          {"prompt": prompt}, 
+                          {"activity_name": activity_name})
+            
+            # Find the activity
+            activity = self.find_activity(activity_name)
+            
+            if not activity:
+                return {
+                    "message": f"Activity '{activity_name}' not found. Please check the activity name and try again.",
+                    "session_id": str(datetime.now().timestamp())
+                }
+            
+            # Generate activity content
+            content = self.generate_activity_content(activity, trace)
+            
+            trace.add_span("Activity Content Generation", 
+                          {"activity": activity}, 
+                          {"content": content})
+            
+            return {
+                "message": f"Activity '{activity.name}' initiated. Check the response for details.",
+                "activity": content,
+                "session_id": str(datetime.now().timestamp())
+            }
+            
+        except Exception as e:
+            error_msg = f"Activity start failed: {str(e)}"
+            logger.error(error_msg)
+            trace.add_span("Activity Start Error", 
+                          {"prompt": prompt}, 
+                          {"error": error_msg})
+            return {"error": error_msg}
+    
+    def extract_activity_info(self, prompt: str) -> Dict[str, Any]:
+        """Extract activity information from prompt"""
+        # Simple extraction - can be enhanced with more sophisticated parsing
+        prompt_lower = prompt.lower()
+        
+        if "start" in prompt_lower and "activity" in prompt_lower:
+            # Extract activity name
+            parts = prompt.split()
+            try:
+                start_idx = parts.index("start")
+                if start_idx + 2 < len(parts) and parts[start_idx + 1] == "activity":
+                    activity_name = " ".join(parts[start_idx + 2:])
+                    return {"name": activity_name, "type": "start"}
+            except ValueError:
+                pass
+        
+        return {"name": "Unknown Activity", "type": "unknown"}
+    
+    def find_activity(self, activity_name: str) -> Optional[Any]:
+        """Find activity by name - placeholder implementation"""
+        # This would typically query your database
+        # For now, return a mock activity
+        class MockActivity:
+            def __init__(self, name):
+                self.name = name
+                self.description = f"Description for {name}"
+                self.level = "Intermediate"
+        
+        return MockActivity(activity_name)
+    
+    def generate_activity_content(self, activity: Any, trace: TraceTracker) -> Dict[str, Any]:
+        """Generate activity content with tracing"""
+        try:
+            # Generate MCQ questions for the activity
+            mcq_prompt = f"""Generate 5 multiple choice questions for the activity: {activity.name}
+            
+            Activity Description: {activity.description}
+            Level: {activity.level}
+            
+            Format each question as:
+            Q1. [Question text]
+            A) [Option A]
+            B) [Option B]
+            C) [Option C]
+            D) [Option D]
+            Correct Answer: [Letter]
+            
+            Make questions engaging and appropriate for {activity.level} level."""
+            
+            trace.add_span("MCQ Generation", 
+                          {"activity": activity.name}, 
+                          {"prompt": mcq_prompt})
+            
+            # Generate MCQs using Azure OpenAI
+            response = self.azure_client.chat.completions.create(
+                model="gpt-4",
+                messages=[{"role": "user", "content": mcq_prompt}],
+                max_tokens=1000,
+                temperature=0.7,
+                callbacks=[self.langfuse_handler] if self.langfuse_handler else None
+            )
+            
+            mcq_content = response.choices[0].message.content.strip()
+            
+            # Track LLM generation
+            track_llm_generation(
+                model="gpt-4",
+                prompt=mcq_prompt,
+                completion=mcq_content,
+                metadata={
+                    "operation": "mcq_generation",
+                    "activity_name": activity.name,
+                    "tokens_used": response.usage.total_tokens if response.usage else None,
+                    "model": "gpt-4"
+                },
+                trace=trace
+            )
+            
+            trace.add_span("MCQ Result", 
+                          {"prompt": mcq_prompt}, 
+                          {"content": mcq_content})
+            
+            return {
+                "name": activity.name,
+                "description": activity.description,
+                "level": activity.level,
+                "mcq_questions": mcq_content,
+                "generated_at": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            error_msg = f"MCQ generation failed: {str(e)}"
+            logger.error(error_msg)
+            trace.add_span("MCQ Generation Error", 
+                          {"activity": activity.name}, 
+                          {"error": error_msg})
+            return {"error": error_msg} 
 

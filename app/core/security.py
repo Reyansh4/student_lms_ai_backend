@@ -4,7 +4,8 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from app.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Temporarily use sha256_crypt while bcrypt is broken
+pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()

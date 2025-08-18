@@ -2175,8 +2175,10 @@ source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
     { name = "alembic" },
+    { name = "bcrypt" },
     { name = "email-validator" },
     { name = "fastapi" },
+    { name = "greenlet" },
     { name = "httpx" },
     { name = "langchain" },
     { name = "langchain-community" },
@@ -2210,9 +2212,11 @@ dev = [
 requires-dist = [
     { name = "aiofiles", specifier = ">=24.1.0" },
     { name = "alembic", specifier = ">=1.12.1" },
+    { name = "bcrypt", specifier = ">=4.3.0" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.12.1" },
     { name = "email-validator", specifier = ">=2.1.0.post1" },
     { name = "fastapi", specifier = ">=0.104.1" },
+    { name = "greenlet", specifier = ">=3.0.0" },
     { name = "httpx", specifier = ">=0.25.2" },
     { name = "langchain", specifier = ">=0.3.25" },
     { name = "langchain-community", specifier = ">=0.3.25" },
@@ -2233,7 +2237,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.6" },
     { name = "rapidfuzz", specifier = ">=3.13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.2.1" },
-    { name = "sqlalchemy", specifier = ">=2.0.23" },
+    { name = "sqlalchemy", specifier = ">=2.0.25" },
     { name = "uvicorn", specifier = ">=0.24.0" },
 ]
 provides-extras = ["dev"]

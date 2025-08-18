@@ -7,18 +7,8 @@ from alembic import context
 
 # Import your models here
 from app.db.base import Base
-from app.models.activity import Activity
-from app.models.activity_category import ActivityCategory
-from app.models.activity_sub_category import ActivitySubCategory
-from app.models.activity_question import ActivityQuestion
-from app.models.activity_session import ActivitySession
-from app.models.activity_document import ActivityDocument
-from app.models.activity_ai_response import ActivityAIResponse
-from app.models.user import User
-from app.models.user_role import UserRole
-from app.models.role import Role
-from app.models.permission import Permission
-from app.models.role_permission import RolePermission
+# Import all models from the models package
+from app.models import *
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -46,8 +36,7 @@ def run_migrations_offline() -> None:
     here as well.  By skipping the Engine creation
     we don't even need a DBAPI to be available.
 
-    Calls to context.execute() here emit the given string to the
-    script output.
+    Calls to context.execute() here emit the given string to the script output.
 
     """
     url = config.get_main_option("sqlalchemy.url")

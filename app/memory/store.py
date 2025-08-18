@@ -110,3 +110,7 @@ class InMemoryStore:
         # sort descending by similarity
         results.sort(key=lambda x: x[1], reverse=True)
         return results[:top_k]
+
+    def get_user_sessions(self, user_id: str) -> List[Session]:
+        """Get all sessions for a specific user"""
+        return [session for session in self._sessions.values() if session.user_id == user_id]
